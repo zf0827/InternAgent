@@ -60,6 +60,7 @@ class GroundingAgent(BaseAgent):
 
     def __init__(self, model, config: Dict[str, Any]):
         super().__init__(model, config)
+        # Single model client used for both extraction and grounding by default
         self.model = model
         self.extract_temperature = float(config.get("extract_temperature", 0.0))
         self.ground_temperature = float(config.get("ground_temperature", 0.0))
@@ -98,6 +99,7 @@ class GroundingAgent(BaseAgent):
                     if isinstance(t, str) and t.strip():
                         report_texts.append(t.strip())
 
+        # If direct reports dict provided, prioritize it and ensure keys exist
         # Expected keys: web_report, code_report, paper_report
         if reports_dict:
             # copy strings or empty
@@ -146,7 +148,7 @@ class GroundingAgent(BaseAgent):
             else:
                 evidences_obj[c] = []
 
-        # Stage 2: Scoring (LLM2)
+        # Stage 2: Grounding / scoring (LLM2)
         ground_prompt = self._build_ground_prompt(part_name, claims, evidences_obj, report_map)
         ground_schema = self._ground_schema()
         try:
@@ -201,11 +203,12 @@ class GroundingAgent(BaseAgent):
         # We present three labeled report blocks so the extractor can reference sources.
         report_block = "".join([f"[WEB_REPORT]{report_map.get('web_report','')}",f"[CODE_REPORT]{report_map.get('code_report','')}",f"[PAPER_REPORT]{report_map.get('paper_report','')}"])
 
+        # Escape braces for format safety
         template = """
 You will be given a set of claims (belonging to one part) and three labeled reports.
 For each claim, extract ALL relevant evidences found in the reports that either SUPPORT or CONTRADICT the claim.
 - Evidence should be detailed, complete and must strictly follow the report content (no hallucination).
-- For each evidence string, indicate which labeled block it came from by appending the source report name in parentheses after the text (e.g., "evidence text here" (WEB_REPORT))
+- For each evidence string, indicate which labeled block it came from by appending the source report name in parentheses after the text (e.g., "evidence text here" (WEB_REPORT/CODE_REPROT/PAPER_REPORT))
 - If no evidence is found for a claim, return an empty list for that claim.
 Return a JSON object with a single top-level key "evidences" mapping each claim to a list of evidence strings.
 You MUST output valid JSON ONLY.
@@ -292,7 +295,7 @@ For each item:
    - 0: No contradicting evidence
 
 4) **Score Distribution**: Ensure scores reflect meaningful distinctions. Reserve high scores (8-10) for the strongest evidence only.
-5）Verify the source of evidences again.
+5）Verify the source(WEB/CODE/PAPER) of evidences again.
 Return STRICT JSON in the following shape (array keeps same order as the items above):
 You MUST output valid JSON ONLY.
 Do NOT wrap the output in triple backticks.
@@ -308,10 +311,10 @@ for example:
       "part": "{part}",
       "support_evidence": "...",
       "support_score": 0,
-      "support_source": "web_report | code_report | paper_report",
+      "support_source": "WEB_REPORT| CODE_REPORT | PAPER_REPORT",
       "contradiction": "...",
       "contradiction_score": 0,
-      "contradiction_source": "web_report | code_report | paper_report"
+      "contradiction_source": "WEB_REPORT | CODE_REPORT | PAPER_REPORT"
     }}
   ]
 }}
