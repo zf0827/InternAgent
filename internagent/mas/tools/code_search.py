@@ -6,53 +6,39 @@ import time
 
 GITHUB_AI_TOKEN = os.getenv('GITHUB_AI_TOKEN', "Your_GITHUB_AI_TOKEN")
 
-def search_github_repos(query, limit=5):
-    """
-    Search GitHub public repositories based on a keyword.
-
-    :param query: The query to search for in repository names or descriptions.
-    :param limit: The total number of repositories to return.
-    :return: A list of dictionaries containing repository details, limited to the specified number.
-    """
+def search_github_repos(query, limit=5, before: Optional[str] = None, date_field: str = 'pushed'):
     repos = []
     per_page = 10
     page = 1
+    searcher = GitHubSearcher()
     while len(repos) < limit:
-        
-        url = f'https://api.github.com/search/repositories?q={query}&per_page={per_page}&page={page}'
-
-        response = requests.get(url)
-
-        if response.status_code == 200:
-            items = response.json().get('items', [])
+        results = searcher.search_repos(query=query, per_page=per_page, page=page, before=before, date_field=date_field)
+        if isinstance(results, dict) and 'items' in results:
+            items = results.get('items', [])
             for item in items:
                 formatted_repo = {
                     "name": f"{item['owner']['login']}/{item['name']}",
                     "author": item['owner']['login'],
-                    "description": item['description'],
+                    "description": item.get('description'),
                     "link": item['html_url']
                 }
                 repos.append(formatted_repo)
                 if len(repos) >= limit:
                     break
-
-            if len(items) < per_page:  # Stop if there are no more repos to fetch
+            if len(items) < per_page:
                 break
             page += 1
         else:
-            raise Exception(f"GitHub API request failed with status code {response.status_code}: {response.text}")
-
+            break
     return_str = """
     Here are some of the repositories I found on GitHub:
     """
-
     for repo in repos:
         return_str += f"""
         Name: {repo['name']}
         Description: {repo['description']}
         Link: {repo['link']}
         """
-
     return return_str
 
 def search_github_code(repo_owner: str, 
@@ -75,7 +61,7 @@ def search_github_code(repo_owner: str,
     Returns:
         List[Dict]: The search results list
     """
-    searcher = GitHubSearcher(GITHUB_AI_TOKEN)
+    searcher = GitHubSearcher()
     results = searcher.search_code(repo_owner, repo_name, query, language, per_page, page)
     # print(results)
     if 'items' not in results:
@@ -114,6 +100,8 @@ class GitHubSearcher:
             token: GitHub Personal Access Token, optional
         """
         self.session = requests.Session()
+        if not token:
+            token = os.getenv('GITHUB_AI_TOKEN')
         if token:
             self.session.headers.update({
                 'Authorization': f'token {token}',
@@ -169,3 +157,25 @@ class GitHubSearcher:
                 sleep_time = reset_time - time.time()
                 if sleep_time > 0:
                     time.sleep(min(sleep_time, 5))  # 最多等待5秒
+
+    def search_repos(self, query: str, per_page: int = 10, page: int = 1, before: Optional[str] = None, date_field: str = 'pushed') -> Dict:
+        base_url = "https://api.github.com/search/repositories"
+        q = query
+        if before:
+            q = f"{query} {date_field}:<{before}"
+        params = {
+            'q': q,
+            'per_page': min(per_page, 100),
+            'page': page
+        }
+        try:
+            response = self.session.get(base_url, params=params)
+            response.raise_for_status()
+            self._handle_rate_limit(response.headers)
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {
+                'status': 'error',
+                'message': f"Request failed: {str(e)}",
+                'items': []
+            }

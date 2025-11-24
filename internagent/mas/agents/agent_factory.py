@@ -21,6 +21,11 @@ from .ranking_agent import RankingAgent
 
 from .method_development_agent import MethodDevelopmentAgent
 from .refinement_agent import RefinementAgent
+from .research_agent import ResearchAgent
+from .report_agent import ReportAgent
+from .extraction_agent import ExtractionAgent
+from .grounding_agent import GroundingAgent
+from .evaluation_agent import EvaluationAgent
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +48,11 @@ class AgentFactory:
         "ranking": RankingAgent,
         "survey": SurveyAgent,
         "scholar": ScholarAgent,
+        "research": ResearchAgent,
+        "report": ReportAgent,
+        "extraction": ExtractionAgent,
+        "grounding": GroundingAgent,
+        "evaluation": EvaluationAgent,
     }
     
     # Cache of created agent instances
@@ -184,4 +194,4 @@ class AgentFactory:
         model_config = config.get("model", {})
         model_provider = model_config.get("provider", "default")
         
-        return f"{agent_type}_{model_provider}" 
+        return f"{agent_type}_{model_provider}"

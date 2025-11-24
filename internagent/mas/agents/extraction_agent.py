@@ -87,6 +87,7 @@ class ExtractionAgent(BaseAgent):
             if not temp_pdf_path or not os.path.exists(temp_pdf_path):
                 raise AgentExecutionError(f"Failed to download PDF for URL {url}")
             input_text = extract_text_from_pdf(temp_pdf_path)
+            logger.info(f"ExtractionAgent: extracted text from PDF")
             source_type = url
 
         elif "doi" in context and context["doi"]:

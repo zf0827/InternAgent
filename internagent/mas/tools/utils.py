@@ -123,13 +123,19 @@ class PaperMetadata:
         return f"{authors} {year}. {self.title}. {journal}"
     
 # Search tools
-def fetch_semantic_papers(keyword, max_results=20):
+def fetch_semantic_papers(keyword, max_results=20, before: Optional[str] = None):
     search_url = "https://api.semanticscholar.org/graph/v1/paper/search"
     query_params = {
         'query': keyword,
         'limit': max_results,
         'fields': 'title,year,citationCount,abstract,tldr,isOpenAccess,openAccessPdf'
     }
+    if before:
+        try:
+            y = int(str(before)[:4])
+            query_params['year'] = f"-{y}"
+        except Exception:
+            pass
     headers = {'x-api-key': os.environ['S2_API_KEY']}  # Ensure you have the API key set
     response = requests.get(search_url, params=query_params, headers=headers)
 
@@ -157,7 +163,7 @@ def fetch_semantic_papers(keyword, max_results=20):
         logger.info(f"KeywordQuery: {response.status_code}")
         return []   
     
-def fetch_pubmed_papers(query: str, max_results: int = 20, sort: str = "relevance") -> list:
+def fetch_pubmed_papers(query: str, max_results: int = 20, sort: str = "relevance", before: Optional[str] = None) -> list:
     """
     Fetch papers from PubMed based on the query.
     
@@ -182,6 +188,16 @@ def fetch_pubmed_papers(query: str, max_results: int = 20, sort: str = "relevanc
         "retmax": max_results,
         "sort": sort_param
     }
+    if before:
+        search_params["datetype"] = "PDAT"
+        try:
+            b = str(before)
+            if len(b) >= 10:
+                search_params["maxdate"] = f"{b[0:4]}/{b[5:7]}/{b[8:10]}"
+            else:
+                search_params["maxdate"] = f"{b[0:4]}"
+        except Exception:
+            pass
     
     try:
         response = requests.get(search_url, params=search_params)
@@ -218,7 +234,7 @@ def fetch_pubmed_papers(query: str, max_results: int = 20, sort: str = "relevanc
         return []
 
 
-def fetch_arxiv_papers(query: str, max_results: int = 20, sort: str = "relevance", categories: list = None) -> list:
+def fetch_arxiv_papers(query: str, max_results: int = 20, sort: str = "relevance", categories: list = None, before: Optional[str] = None) -> list:
     """
     Fetch papers from arXiv based on the query.
     
@@ -245,8 +261,21 @@ def fetch_arxiv_papers(query: str, max_results: int = 20, sort: str = "relevance
         cat_filter = " AND (" + " OR ".join([f"cat:{cat}" for cat in categories]) + ")"
     
     # Search parameters
+    date_filter = ""
+    if before:
+        try:
+            b = str(before)
+            y = b[0:4]
+            m = b[5:7] if len(b) >= 7 else "12"
+            d = b[8:10] if len(b) >= 10 else "31"
+            start = "190001010000"
+            end = f"{y}{m}{d}2359"
+            date_filter = f" AND submittedDate:[{start} TO {end}]"
+            # sort_param = "submittedDate"
+        except Exception:
+            pass
     search_params = {
-        "search_query": f"all:{query}{cat_filter}",
+        "search_query": f"all:{query}{cat_filter}{date_filter}",
         "max_results": max_results,
         "sortBy": sort_param,
         "sortOrder": "descending"
@@ -254,10 +283,10 @@ def fetch_arxiv_papers(query: str, max_results: int = 20, sort: str = "relevance
     
     try:
         response = requests.get(search_url, params=search_params)
+        print(f"[DEBUG] 实际发送的url: {response.url}")  # 打印最终请求的完整URL
         if response.status_code != 200:
             logger.error(f"arXiv search error: {response.status_code}")
             return []
-        
         xml_data = response.text
         papers = parse_arxiv_xml(xml_data)  # 假设你有一个解析函数
         
@@ -329,15 +358,24 @@ def parse_arxiv_xml(xml_data: str) -> list:
                 except ValueError:
                     pass
             
-            # DOI and URL
-            doi = None
-            url = None
+            # DOI 和 URL：优先使用 <id> 作为 abs URL，<arxiv:doi> 作为 DOI
+            pdf_link = None
+            abs_link = None
+            link_doi = None
             for link in entry.find_all("link"):
                 href = link.get("href", "")
-                if link.get("title") == "doi":
-                    doi = href.replace("http://dx.doi.org/", "")
-                elif link.get("rel") == "alternate":
-                    url = href.replace("abs", "pdf")
+                title_attr = link.get("title")
+                if "/pdf/" in href or href.endswith(".pdf"):
+                    pdf_link = href
+                if "/abs/" in href:
+                    abs_link = href
+                if title_attr == "doi":
+                    link_doi = href.replace("http://dx.doi.org/", "")
+
+            id_elem = entry.find("id")
+            arxiv_doi_elem = entry.find("arxiv:doi")
+            doi = (arxiv_doi_elem.text.strip() if arxiv_doi_elem else None) or link_doi
+            url = (id_elem.text.strip() if id_elem else None) or abs_link or pdf_link
             
             paper = PaperMetadata(
                     title=title_text,
@@ -356,6 +394,109 @@ def parse_arxiv_xml(xml_data: str) -> list:
     
     return papers
 
+
+def parse_arxiv_xml_debug(xml_data: str) -> list:
+    print("[DEBUG] parse_arxiv_xml_debug: 开始解析 arXiv XML 数据")
+    print(f"[DEBUG] 原始 XML 长度: {len(xml_data)} 字符")
+    papers = []
+    soup = BeautifulSoup(xml_data, "xml")
+    for idx, entry in enumerate(soup.find_all("entry")):
+        try:
+            title_elem = entry.find("title")
+            title_text = title_elem.text.strip() if title_elem else ""
+
+            summary_elem = entry.find("summary")
+            abstract_text = summary_elem.text.strip() if summary_elem else ""
+
+            authors = []
+            for author in entry.find_all("author"):
+                name_elem = author.find("name")
+                if name_elem:
+                    authors.append(name_elem.text.strip())
+
+            published_elem = entry.find("published")
+            year = None
+            if published_elem:
+                try:
+                    pub_date = published_elem.text.strip()
+                    match = re.search(r"(\d{4})", pub_date)
+                    if match:
+                        year = int(match.group(1))
+                except ValueError:
+                    pass
+
+            pdf_link = None
+            abs_link = None
+            link_doi = None
+            for link in entry.find_all("link"):
+                href = link.get("href", "")
+                title_attr = link.get("title")
+                if "/pdf/" in href or href.endswith(".pdf"):
+                    pdf_link = href
+                if "/abs/" in href:
+                    abs_link = href
+                if title_attr == "doi":
+                    link_doi = href.replace("http://dx.doi.org/", "")
+
+            id_elem = entry.find("id")
+            arxiv_doi_elem = entry.find("arxiv:doi")
+            doi = (arxiv_doi_elem.text.strip() if arxiv_doi_elem else None) or link_doi
+            url = (id_elem.text.strip() if id_elem else None) or abs_link or pdf_link
+            print(
+                f"[DEBUG] entry#{idx}: title='{title_text[:80]}' | year={year} | doi={doi} | url={url} | id={id_elem.text.strip() if id_elem else None} | arxiv:doi={arxiv_doi_elem.text.strip() if arxiv_doi_elem else None}"
+            )
+
+            paper = PaperMetadata(
+                title=title_text,
+                authors=authors,
+                abstract=abstract_text,
+                year=year,
+                doi=doi,
+                journal="arXiv",
+                url=url,
+                source='arXiv'
+            )
+            paper_dict = paper.to_dict()
+            print(f"[DEBUG] 解析后的字典: {paper_dict}")
+            papers.append(paper_dict)
+
+        except Exception as e:
+            logger.error(f"Error parsing arXiv entry: {str(e)}")
+    print(f"[DEBUG] 总共解析到 {len(papers)} 篇论文")
+    return papers
+
+
+def fetch_arxiv_papers_debug(query: str, max_results: int = 20, sort: str = "relevance", categories: list = None) -> list:
+    print(f"[DEBUG] fetch_arxiv_papers_debug: 查询关键词: '{query}', max_results={max_results}, sort={sort}, categories={categories}")
+    search_url = "http://export.arxiv.org/api/query"
+    sort_param = "relevance" if sort == "relevance" else "submittedDate"
+    cat_filter = ""
+    if categories:
+        cat_filter = " AND (" + " OR ".join([f"cat:{cat}" for cat in categories]) + ")"
+    search_params = {
+        "search_query": f"all:{query}{cat_filter}",
+        "max_results": max_results,
+        "sortBy": sort_param,
+        "sortOrder": "descending"
+    }
+    try:
+        print(f"[DEBUG] 请求 URL: {search_url}")
+        print(f"[DEBUG] 请求参数: {search_params}")
+        response = requests.get(search_url, params=search_params)
+        print(f"[DEBUG] 响应状态码: {response.status_code}")
+        if response.status_code != 200:
+            logger.error(f"arXiv search error: {response.status_code}")
+            print(f"[DEBUG] 错误响应文本: {response.text[:2000]}")
+            return []
+        xml_data = response.text
+        print(f"[DEBUG] 原始响应内容（前2000字符）:\n{xml_data[:2000]}")
+        papers = parse_arxiv_xml_debug(xml_data)
+        print(f"[DEBUG] 解析完成，共 {len(papers)} 篇")
+        return papers
+    except Exception as e:
+        logger.error(f"Error searching arXiv: {e}")
+        print(f"[DEBUG] 异常: {e}")
+        return []
 
 def parse_pubmed_xml(xml_data: str) -> list:
 

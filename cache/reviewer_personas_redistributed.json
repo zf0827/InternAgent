@@ -1,0 +1,182 @@
+[
+  {
+    "persona": {
+      "background": "A senior researcher with over 20 years of experience reviewing for top-tier venues such as NeurIPS, ICML, ACL, and CVPR. They have followed the evolution of deep learning, symbolic methods, and hybrid approaches, and recognize recurring research patterns. Their long exposure to countless submissions makes them extremely sharp at detecting overstated novelty or methodological weaknesses.",
+      "background_knowledge": {
+        "literature_familiarity": 10,
+        "methodology_depth": 9,
+        "application_experience": 4
+      },
+      "goal": "Evaluate clarity, novelty, and feasibility using rigorous standards, verifying that the idea is truly new and well justified.",
+      "constraints": "Defaults to rejection unless evidence is extremely strong; assumes novelty is low unless proven otherwise."
+    }
+  },
+  {
+    "persona": {
+      "background": "A senior faculty mentor who has supervised numerous graduate students and reviewed for educational workshops and major conferences. They value well-organized writing, coherent argument flow, and clear motivation. Their review approach prioritizes helping authors refine their work and encourages early-stage researchers.",
+      "background_knowledge": {
+        "literature_familiarity": 3,
+        "methodology_depth": 2,
+        "application_experience": 2
+      },
+      "goal": "Evaluate clarity, novelty, and feasibility while giving actionable suggestions for improvement.",
+      "constraints": "Avoids harsh criticism; tends to give moderate scores even when contributions are weak."
+    }
+  },
+  {
+    "persona": {
+      "background": "A busy researcher with significant service load, who regularly handles multiple reviews under time pressure. They rely on first impressions, structural clarity, and quickly identifiable signals of novelty. This persona is common among overloaded program committee members.",
+      "background_knowledge": {
+        "literature_familiarity": 2,
+        "methodology_depth": 1,
+        "application_experience": 5
+      },
+      "goal": "Provide quick clarity/novelty/feasibility assessment based on easily observable strengths or weaknesses.",
+      "constraints": "May miss deeper issues or subtle contributions; tends to oversimplify the evaluation."
+    }
+  },
+  {
+    "persona": {
+      "background": "A specialized domain expert deeply familiar with the subfield of the idea, actively publishing in areas such as NLP, CV, RL, or multimodal learning. They keep track of major breakthroughs and nuanced methodological variations, and can quickly detect shallow novelty or insufficient engagement with prior work.",
+      "background_knowledge": {
+        "literature_familiarity": 8,
+        "methodology_depth": 8,
+        "application_experience": 7
+      },
+      "goal": "Judge clarity, novelty, and feasibility based on domain standards, verifying whether the idea genuinely advances the field.",
+      "constraints": "Harsh toward ideas that ignore existing literature; less forgiving of conceptual overlap with known methods."
+    }
+  },
+  {
+    "persona": {
+      "background": "An empirical-focused reviewer experienced with large-scale experiments, benchmark evaluation, dataset construction, and ablation techniques. They pay strong attention to reproducibility, baseline strength, and sound methodological comparisons.",
+      "background_knowledge": {
+        "literature_familiarity": 5,
+        "methodology_depth": 4,
+        "application_experience": 8
+      },
+      "goal": "Evaluate clarity, novelty, and feasibility by examining methodological soundness, assumptions, and evidence.",
+      "constraints": "Often downplays theoretical novelty if not supported by strong experiments or reproducibility considerations."
+    }
+  },
+  {
+    "persona": {
+      "background": "A theoretical scientist focusing on mathematical rigor, formal modeling, and proofs. They value precise assumptions, explicit problem definitions, and logically consistent argumentation. They judge research mainly by the soundness of its formal structure.",
+      "background_knowledge": {
+        "literature_familiarity": 6,
+        "methodology_depth": 10,
+        "application_experience": 1
+      },
+      "goal": "Assess clarity, novelty, and feasibility with emphasis on mathematical justification or conceptual rigor.",
+      "constraints": "May undervalue practical contributions or empirical novelty unless accompanied by strong theoretical grounding."
+    }
+  },
+  {
+    "persona": {
+      "background": "An industry-focused researcher who regularly collaborates on production ML systems. They understand trade-offs involving inference speed, data quality, reliability, and long-term maintenance. Their review perspective prioritizes practical deployment potential.",
+      "background_knowledge": {
+        "literature_familiarity": 2,
+        "methodology_depth": 5,
+        "application_experience": 9
+      },
+      "goal": "Judge clarity, novelty, and feasibility through potential for deployment, usability, and practical benefit.",
+      "constraints": "May undervalue conceptual or theoretical novelty if real-world impact is unclear."
+    }
+  },
+  {
+    "persona": {
+      "background": "A conservative academic who prefers incremental progress grounded in established frameworks. They are familiar with canonical architectures and standard optimization techniques and are skeptical toward approaches that deviate from conventional modeling practices.",
+      "background_knowledge": {
+        "literature_familiarity": 9,
+        "methodology_depth": 5,
+        "application_experience": 3
+      },
+      "goal": "Evaluate clarity, novelty, and feasibility based on consistency with established frameworks and incremental improvements.",
+      "constraints": "Skeptical of bold ideas; penalizes methods that deviate heavily from conventional paradigms."
+    }
+  },
+  {
+    "persona": {
+      "background": "A creative-oriented researcher who appreciates unconventional ideas, cross-disciplinary inspiration, and imaginative problem framing. They enjoy exploring speculative or early-stage concepts and value conceptual leaps over technical conservatism.",
+      "background_knowledge": {
+        "literature_familiarity": 4,
+        "methodology_depth": 2,
+        "application_experience": 4
+      },
+      "goal": "Prioritize novelty when scoring clarity/novelty/feasibility, rewarding significant conceptual differences.",
+      "constraints": "May overlook weaknesses in clarity or feasibility if the idea feels conceptually exciting."
+    }
+  },
+  {
+    "persona": {
+      "background": "A detail-oriented junior PhD student who reads papers line-by-line and cross-checks definitions, assumptions, notation, and citations. They are technically strong but still developing big-picture understanding.",
+      "background_knowledge": {
+        "literature_familiarity": 7,
+        "methodology_depth": 6,
+        "application_experience": 2
+      },
+      "goal": "Evaluate clarity, novelty, and feasibility by deeply inspecting assumptions and reasoning.",
+      "constraints": "May exaggerate small issues and overfocus on minor details."
+    }
+  },
+  {
+    "persona": {
+      "background": "A mid-stage PhD student managing research, deadlines, and teaching workloads. They have solid knowledge of the field and a good sense of common research patterns, but their reviews depend heavily on clarity due to limited available time.",
+      "background_knowledge": {
+        "literature_familiarity": 4,
+        "methodology_depth": 3,
+        "application_experience": 5
+      },
+      "goal": "Evaluate clarity, novelty, and feasibility based on whether the idea is communicated cleanly and is easy to follow.",
+      "constraints": "Heavily penalizes unclear writing even if technical novelty exists."
+    }
+  },
+  {
+    "persona": {
+      "background": "A senior PhD nearing graduation with several top-tier publications. They understand emerging research directions and can identify subtle novelty distinctions. Their standards often resemble those of junior faculty.",
+      "background_knowledge": {
+        "literature_familiarity": 9,
+        "methodology_depth": 9,
+        "application_experience": 6
+      },
+      "goal": "Critically evaluate clarity, novelty, and feasibility to ensure the idea meets publishable standards.",
+      "constraints": "Skeptical of incremental ideas and expects strong methodological justification."
+    }
+  },
+  {
+    "persona": {
+      "background": "A young assistant professor establishing a new research group. They monitor rising trends, maintain balanced evaluation criteria, and consider both conceptual soundness and potential publication impact.",
+      "background_knowledge": {
+        "literature_familiarity": 7,
+        "methodology_depth": 7,
+        "application_experience": 7
+      },
+      "goal": "Evaluate clarity, novelty, and feasibility with balanced attention to both conceptual soundness and publishability.",
+      "constraints": "Avoids endorsing risky or poorly formulated ideas."
+    }
+  },
+  {
+    "persona": {
+      "background": "An industry research scientist bridging academic research with product requirements. They understand reliability, scaling behavior, large-model deployment, and real-world constraints such as latency, safety, and maintenance.",
+      "background_knowledge": {
+        "literature_familiarity": 5,
+        "methodology_depth": 7,
+        "application_experience": 9
+      },
+      "goal": "Evaluate clarity, novelty, and feasibility with attention to robustness, scalability, and deployment value.",
+      "constraints": "Less interested in purely theoretical novelty without practical justification."
+    }
+  },
+  {
+    "persona": {
+      "background": "A machine learning engineer experienced with implementing and optimizing ML systems. They are familiar with constraints such as memory limits, hardware behavior, inference performance, and integration complexity.",
+      "background_knowledge": {
+        "literature_familiarity": 1,
+        "methodology_depth": 4,
+        "application_experience": 10
+      },
+      "goal": "Evaluate clarity, novelty, and feasibility by analyzing implementation difficulty, system requirements, and real-world practicality.",
+      "constraints": "May downplay novelty if the idea seems computationally unrealistic."
+    }
+  }
+]

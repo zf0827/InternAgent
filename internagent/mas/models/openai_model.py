@@ -22,7 +22,8 @@ class OpenAIModel(BaseModel):
     """OpenAI implementation of the BaseModel interface."""
     
     def __init__(self, 
-                api_key: Optional[str] = None, 
+                api_key: Optional[str] = None,
+                base_url: Optional[str] = None,
                 model_name: str = "gpt-4o", 
                 max_tokens: int = 4096,
                 temperature: float = 0.7,
@@ -38,7 +39,7 @@ class OpenAIModel(BaseModel):
             timeout: Timeout in seconds for API calls
         """
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        self.base_url = os.environ.get("OPENAI_API_BASE_URL", "https://api.openai.com/v1")
+        self.base_url = base_url or os.environ.get("OPENAI_API_BASE_URL", "https://api.openai.com/v1")
         if not self.api_key:
             logger.warning("OpenAI API key not provided. Please set OPENAI_API_KEY environment variable.")
             
@@ -50,6 +51,7 @@ class OpenAIModel(BaseModel):
         try:
 
             self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
+            print(f"key{self.api_key}&url{self.base_url}")
             logger.info(f"OpenAI client initialized with model: {self.model_name} via {self.base_url}")
         except TypeError as e:
             logger.warning(f"Error initializing OpenAI client: {e}")
@@ -242,8 +244,9 @@ class OpenAIModel(BaseModel):
         """
         return cls(
             api_key=config.get("api_key"),
-            model_name=config.get("model_name", "gpt-4o"),
+            base_url=config.get("base_url"),
+            model_name=config.get("model_name", "gpt-4o-mini"),
             max_tokens=config.get("max_tokens", 4096),
             temperature=config.get("temperature", 0.7),
             timeout=config.get("timeout", 60)
-        ) 
+        )

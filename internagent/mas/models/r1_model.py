@@ -35,7 +35,7 @@ class R1Model(BaseModel):
     def __init__(self, 
                 api_key: Optional[str] = None, 
                 base_url: Optional[str] = None,
-                model_name: str = "DeepSeek-R1", 
+                model_name: str = "deepseek-v3", 
                 max_tokens: int = 4096,
                 temperature: float = 0.7,
                 timeout: int = 60):
@@ -63,6 +63,7 @@ class R1Model(BaseModel):
         # Initialize the client with only the supported parameters for version 1.3.3
         try:
             # The AsyncOpenAI in version 1.3.3 doesn't support 'proxies' parameter
+            logger.info(f"Initializing DeepSeek client with API key: {self.api_key} and base URL: {self.base_url}")
             self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
         except TypeError as e:
             logger.warning(f"Error initializing DeepSeek client: {e}")
@@ -111,7 +112,13 @@ class R1Model(BaseModel):
             )
             
             response_text = response.choices[0].message.content
-            think_text, answer_text = response_text.split("</think>\n\n", 1)
+            
+            # Handle R1 model reasoning tags if present
+            if "</think>" in response_text:
+                think_text, answer_text = response_text.split("</think>\n\n", 1)
+            else:
+                answer_text = response_text
+            
             return answer_text
         except Exception as e:
             logger.error(f"Error generating response from OpenAI: {e}")
@@ -153,9 +160,25 @@ class R1Model(BaseModel):
                 response_format={"type": "json_object"},
                 **kwargs
             )
-            
+            logger.info(f"R1Model: response: {response}")
             response_text = response.choices[0].message.content
-            think_text, answer_text = response_text.split("</think>\n\n", 1)
+            
+            # Handle R1 model reasoning tags if present
+            if "</think>" in response_text:
+                think_text, answer_text = response_text.split("</think>\n\n", 1)
+            else:
+                answer_text = response_text
+            
+            # Remove markdown code block markers if present
+            answer_text = answer_text.strip()
+            if answer_text.startswith("```json"):
+                answer_text = answer_text[7:]  # Remove ```json
+            elif answer_text.startswith("```"):
+                answer_text = answer_text[3:]  # Remove ```
+            if answer_text.endswith("```"):
+                answer_text = answer_text[:-3]  # Remove trailing ```
+            answer_text = answer_text.strip()
+            
             return json.loads(answer_text)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode JSON response: {e}")
@@ -240,11 +263,12 @@ class R1Model(BaseModel):
             config: Configuration dictionary with model settings
             
         Returns:
-            Configured OpenAIModel instance
+            Configured R1Model instance
         """
         return cls(
             api_key=config.get("api_key"),
-            model_name=config.get("model_name", "DeepSeek-R1"),
+            base_url=config.get("base_url") or config.get("api_base"),
+            model_name=config.get("model_name", "deepseek-v3"),
             max_tokens=config.get("max_tokens", 4096),
             temperature=config.get("temperature", 0.7),
             timeout=config.get("timeout", 60)

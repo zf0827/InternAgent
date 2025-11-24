@@ -75,6 +75,37 @@ agents:
     max_papers: 10
     temperature: 0.6
 
+  # Research Agent (for deep search across multiple platforms)
+  research:
+    model_provider: "default"
+    max_retries: 3
+    # Search parameters
+    max_iters: 3                    # Deep search iteration depth
+    max_results_per_source: 3       # Max results per source
+    enable_code_search: true        # Enable GitHub/Kaggle search
+    enable_web_search: true         # Enable web search
+    enable_scholar_search: true     # Enable Google Scholar search
+    paper_sources:                  # Paper sources to search
+      - "arxiv"
+      - "semantic_scholar"
+    search_timeout: 30              # Search timeout (seconds)
+    request_timeout: 10             # Request timeout (seconds)
+    # Filtering and enrichment
+    enable_filtering: true          # Enable relevance filtering
+    filter_top_k_papers: 10         # Top papers to keep after filtering
+    filter_top_k_code: 6            # Top code results to keep
+    filter_top_k_web: 10            # Top web results to keep
+    enable_file_tree: true          # Generate file trees for GitHub repos
+    file_tree_max_level: 3          # Max depth for file trees
+
+  # Report Agent (for generating research reports from search results)
+  report:
+    model_provider: "default"
+    temperature: 0.7
+    max_retries: 3
+    # Report generation parameters
+    sample_size: 10                 # Sampling size per resource type
+
 # Workflow Configuration
 workflow:
   max_iterations: 4
