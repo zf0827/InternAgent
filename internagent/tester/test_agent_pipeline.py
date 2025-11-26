@@ -207,7 +207,7 @@ async def main():
     research_config = {
         "name": "ResearchAgent",
         "model_provider": "dsr1",
-        "max_iters": 0,  # 快速测试用0次迭代
+        "max_iters": 0,  # 实际在 params 中控制
         "max_results_per_source": 3,
         "enable_code_search": True,
         "enable_web_search": True,
@@ -218,7 +218,7 @@ async def main():
         "filter_top_k_papers": 10,
         "filter_top_k_code": 6,
         "filter_top_k_web": 10,
-        "top_k_readpage": 3,
+        "top_k_readpage": 1, # 只阅读一个页面
         "_global_config": default_model_config
     }
     
@@ -279,7 +279,7 @@ async def main():
     print("STEP 1: ExtractionAgent - PDF -> Idea")
     print("=" * 80)
     
-    pdf_url = "https://arxiv.org/pdf/2301.13379"
+    pdf_url = "https://openreview.net/pdf?id=wLR9d5ZFpY"
     extraction_context = {
         "url": pdf_url
     }
@@ -324,7 +324,7 @@ async def main():
         "idea": idea.to_dict()
     }
     research_params = {
-        "max_iters": 1  # 快速测试
+        "max_iters": 1  # 真正控制搜索次数
     }
     
     try:
@@ -502,8 +502,10 @@ async def main():
                 clarity_score = eval_result.get("clarity", {}).get("score", "N/A")
                 novelty_score = eval_result.get("novelty", {}).get("score", "N/A")
                 feasibility_score = eval_result.get("feasibility", {}).get("score", "N/A")
+                overall_rating = eval_result.get("overall", {}).get("overall_rating", "N/A")
                 print(f"  Persona {idx} Results: Clarity={clarity_score}/10, "
-                      f"Novelty={novelty_score}/10, Feasibility={feasibility_score}/10")
+                      f"Novelty={novelty_score}/10, Feasibility={feasibility_score}/10, "
+                      f"Overall Rating={overall_rating}/10")
                 
         except Exception as e:
             logger.error(f"EvaluationAgent execution failed: {e}")
@@ -595,14 +597,16 @@ async def main():
         first_repo = search_results.github_repos[0]
         print(f"  Title: {first_repo.title}")
         print(f"  URL: {first_repo.url}")
-        print(f"  Description: {first_repo.description[:200]}..." if len(first_repo.description) > 200 else f"  Description: {first_repo.description}")
+        if first_repo.description:
+            print(f"  Description: {first_repo.description[:200]}..." if len(first_repo.description) > 200 else f"  Description: {first_repo.description}")
     
     if search_results.kaggle_results:
         print(f"\nKaggle Results ({len(search_results.kaggle_results)} total):")
         first_kaggle = search_results.kaggle_results[0]
         print(f"  Title: {first_kaggle.title}")
         print(f"  URL: {first_kaggle.url}")
-        print(f"  Description: {first_kaggle.description[:200]}..." if len(first_kaggle.description) > 200 else f"  Description: {first_kaggle.description}")
+        if first_kaggle.description:
+            print(f"  Description: {first_kaggle.description[:200]}..." if len(first_kaggle.description) > 200 else f"  Description: {first_kaggle.description}")
     
     if search_results.web_pages:
         print(f"\nWeb Pages ({len(search_results.web_pages)} total):")
@@ -674,7 +678,7 @@ async def main():
                 print(f"Feasibility Pseudocode:\n{feasibility.get('pseudocode', 'N/A')}")
             
             print(f"\nOverall Summary: {overall.get('summary', 'N/A')}")
-            print(f"Overall Recommendation: {overall.get('recommendation', 'N/A')}")
+            print(f"Overall Rating: {overall.get('overall_rating', 'N/A')}/10")
     
     
     print("\n" + "=" * 80)
@@ -682,7 +686,7 @@ async def main():
     print("=" * 80)
     
     # 保存结果到文件（注意：reports可能很长，保存完整内容）
-    output_file = cache_dir / "agent_pipeline_results.json"
+    output_file = cache_dir / "agent_pipeline_results_oral.json"
     try:
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(final_results, f, ensure_ascii=False, indent=2)

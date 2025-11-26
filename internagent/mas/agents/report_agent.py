@@ -255,7 +255,7 @@ class ReportAgent(BaseAgent):
                 system_prompt=self.system_prompt,
                 temperature=params.get("temperature", self.temperature),
             )
-            web_report = ""
+            # web_report = ""
             code_report = await self._call_model(
                 prompt=code_prompt,
                 system_prompt=self.system_prompt,
@@ -266,7 +266,7 @@ class ReportAgent(BaseAgent):
                 system_prompt=self.system_prompt,
                 temperature=params.get("temperature", self.temperature),
             )
-            paper_report = ""
+            # paper_report = ""
         except Exception as e:
             raise AgentExecutionError(str(e))
         print("=" * 40 + " Web Report " + "=" * 40)

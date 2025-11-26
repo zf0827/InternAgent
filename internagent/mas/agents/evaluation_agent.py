@@ -148,7 +148,7 @@ class EvaluationAgent(BaseAgent):
                 - clarity: {score, reason}
                 - novelty: {score, reason}
                 - feasibility: {score, reason, pseudocode}
-                - overall: {summary, recommendation}
+                - overall: {summary, overall_rating}
         """
         # Extract inputs
         idea = context.get("idea")
@@ -212,21 +212,23 @@ class EvaluationAgent(BaseAgent):
         # Handle exceptions from sub-agents
         if isinstance(clarity_result, Exception):
             logger.error(f"ClarityAgent failed: {clarity_result}")
-            clarity_result = {"score": 0.0, "reason": f"Evaluation failed: {str(clarity_result)}"}
+            clarity_result = {"score": 1, "reason": f"Evaluation failed: {str(clarity_result)}"}
         
         if isinstance(novelty_result, Exception):
             logger.error(f"NoveltyAgent failed: {novelty_result}")
-            novelty_result = {"score": 0.0, "reason": f"Evaluation failed: {str(novelty_result)}"}
+            novelty_result = {"score": 1, "reason": f"Evaluation failed: {str(novelty_result)}"}
         
         if isinstance(feasibility_result, Exception):
             logger.error(f"FeasibilityAgent failed: {feasibility_result}")
-            feasibility_result = {"score": 0.0, "reason": f"Evaluation failed: {str(feasibility_result)}", "pseudocode": ""}
+            feasibility_result = {"score": 1, "reason": f"Evaluation failed: {str(feasibility_result)}", "pseudocode": ""}
         
-        # Generate overall summary
-        overall_summary = self._generate_overall_summary(
+        # Generate overall summary using LLM
+        overall_summary = await self._generate_overall_summary(
             clarity_result,
             novelty_result,
-            feasibility_result
+            feasibility_result,
+            persona=persona,
+            temperature=params.get("temperature", self.temperature)
         )
         
         return {
@@ -236,45 +238,110 @@ class EvaluationAgent(BaseAgent):
             "overall": overall_summary
         }
     
-    def _generate_overall_summary(self, clarity: Dict, novelty: Dict, feasibility: Dict) -> Dict[str, str]:
+    async def _generate_overall_summary(self, clarity: Dict, novelty: Dict, feasibility: Dict, 
+                                        persona: Dict[str, Any] = None, temperature: float = 0.7) -> Dict[str, Any]:
         """
-        Generate overall evaluation summary and recommendation.
+        Generate overall evaluation summary and overall rating using LLM.
         
         Args:
-            clarity: Clarity evaluation result
-            novelty: Novelty evaluation result
-            feasibility: Feasibility evaluation result
+            clarity: Clarity evaluation result with score and reason
+            novelty: Novelty evaluation result with score and reason
+            feasibility: Feasibility evaluation result with score, reason, and pseudocode
+            persona: Reviewer persona dictionary (optional)
+            temperature: Temperature for LLM generation
             
         Returns:
-            Dictionary with summary and recommendation
+            Dictionary with summary and overall_rating
         """
         clarity_score = clarity.get("score", 0.0)
         novelty_score = novelty.get("score", 0.0)
         feasibility_score = feasibility.get("score", 0.0)
+        clarity_reason = clarity.get("reason", "")
+        novelty_reason = novelty.get("reason", "")
+        feasibility_reason = feasibility.get("reason", "")
         
-        avg_score = (clarity_score + novelty_score + feasibility_score) / 3.0
+        # Build prompt for overall summary generation
+        persona_section = self._build_persona_section(persona) if persona else ""
         
-        # Generate summary
-        summary_parts = [
-            f"Clarity Score: {clarity_score:.2f}/10 - {clarity.get('reason', '')[:200]}...",
-            f"Novelty Score: {novelty_score:.2f}/10 - {novelty.get('reason', '')[:200]}...",
-            f"Feasibility Score: {feasibility_score:.2f}/10 - {feasibility.get('reason', '')[:200]}...",
-            f"\nOverall Average Score: {avg_score:.2f}/10"
-        ]
-        summary = "\n".join(summary_parts)
+        prompt = f"""{persona_section}You are a senior research reviewer synthesizing evaluation results from three aspects: clarity, novelty, and feasibility.
+
+=== Evaluation Results ===
+
+**Clarity Evaluation:**
+Score: {clarity_score}/10
+Reason: {clarity_reason}
+
+**Novelty Evaluation:**
+Score: {novelty_score}/10
+Reason: {novelty_reason}
+
+**Feasibility Evaluation:**
+Score: {feasibility_score}/10
+Reason: {feasibility_reason}
+
+=== Task ===
+Based on the three evaluation results above, write a comprehensive review summary that:
+1. Describes how this reviewer views the research idea overall
+2. Synthesizes the evaluations from all three aspects (clarity, novelty, feasibility)
+3. Provides an overall assessment
+
+Then, assign an overall rating using the ICLR 6-level scale (only allowed values: 1, 3, 5, 6, 8, 10).
+
+=== ICLR Overall Rating Scale ===
+- **1 (Strong Reject)**: The submission is fundamentally flawed — e.g., the problem is unimportant or trivial, the method is unsound, experiments are meaningless or missing, writing is incoherent, or novelty is negligible.
+
+- **3 (Reject)**: The submission has substantial flaws. Perhaps some interesting ideas, but major weaknesses (soundness, clarity, evaluation) preclude acceptance in current form.
+
+- **5 (Weak Reject / Borderline Reject)**: The submission shows some promise (some novelty or interesting ideas) but also significant weaknesses. It merits serious improvements before it could be considered for acceptance.
+
+- **6 (Weak Accept / Borderline Accept)**: The submission has acceptable quality overall. It has reasonable novelty, soundness, and adequate evaluation, but may lack strong impact, novelty, or polish. Acceptable but not outstanding.
+
+- **8 (Accept)**: The submission is solid: contributions are clear, novelty/impact is decent, evaluation is thorough, writing is good. This is a paper worthy of acceptance.
+
+- **10 (Strong Accept)**: The submission is excellent — high novelty or impact, sound methodology, thorough and convincing experiments, clear writing, and likely to lead to significant interest and follow-up.
+
+=== Output Requirements ===
+Provide a comprehensive summary that synthesizes all three evaluation aspects and an overall rating based on the ICLR scale above."""
         
-        # Generate recommendation
-        if avg_score >= 7.0:
-            recommendation = "This idea shows strong potential. It demonstrates good clarity, novelty, and feasibility. Consider proceeding with implementation."
-        elif avg_score >= 5.0:
-            recommendation = "This idea has moderate potential but may need refinement in some areas. Review the specific concerns raised in each evaluation dimension."
-        else:
-            recommendation = "This idea faces significant challenges. Consider substantial revisions or exploring alternative approaches before proceeding."
-        
-        return {
-            "summary": summary,
-            "recommendation": recommendation
+        schema = {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Comprehensive review summary describing how the reviewer views the research idea, synthesizing evaluations from clarity, novelty, and feasibility aspects"
+                },
+                "overall_rating": {
+                    "type": "number",
+                    "description": "Overall rating using ICLR 6-level scale. Only allowed values: 1, 3, 5, 6, 8, 10",
+                    "enum": [1, 3, 5, 6, 8, 10]
+                }
+            },
+            "required": ["summary", "overall_rating"]
         }
+        
+        system_prompt = (
+            "You are an expert research reviewer specializing in synthesizing evaluation results "
+            "and providing comprehensive assessments of research ideas. Your task is to integrate "
+            "evaluations from multiple aspects and provide a balanced overall judgment."
+        )
+        
+        try:
+            result = await self.model.generate_json(
+                prompt=prompt,
+                schema=schema,
+                system_prompt=system_prompt,
+                temperature=temperature
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Overall summary generation failed: {e}")
+            # Fallback to simple summary if LLM generation fails
+            avg_score = (clarity_score + novelty_score + feasibility_score) / 3.0
+            fallback_rating = 1 if avg_score < 2 else (3 if avg_score < 4 else (5 if avg_score < 5.5 else (6 if avg_score < 7 else (8 if avg_score < 9 else 10))))
+            return {
+                "summary": f"Clarity: {clarity_score}/10 - {clarity_reason[:200]}...\nNovelty: {novelty_score}/10 - {novelty_reason[:200]}...\nFeasibility: {feasibility_score}/10 - {feasibility_reason[:200]}...",
+                "overall_rating": fallback_rating
+            }
     
     @staticmethod
     def _mask_report_by_ratio(text: str, ratio: float) -> str:
@@ -427,9 +494,8 @@ class EvaluationAgent(BaseAgent):
                 "properties": {
                     "score": {
                         "type": "number",
-                        "description": "Clarity score from 0 to 10, where 10 is excellent clarity, logical consistency, and factual correctness",
-                        "minimum": 0,
-                        "maximum": 10
+                        "description": "Clarity score using ICLR 6-level scale. Only allowed values: 1, 3, 5, 6, 8, 10",
+                        "enum": [1, 3, 5, 6, 8, 10]
                     },
                     "reason": {
                         "type": "string",
@@ -490,13 +556,22 @@ Based on your knowledge and the provided research reports, evaluate the idea fro
 4. **Reasonableness**: Based on the evidence and your knowledge, is the idea reasonable and plausible? Are there any obvious flaws or contradictions?
 
 === Output Requirements ===
-Provide a score from 0 to 10 and a detailed reason explaining your evaluation.
+Provide a score using the ICLR 6-level scale (only allowed values: 1, 3, 5, 6, 8, 10) and a detailed reason explaining your evaluation.
+
+=== ICLR Scoring Scale for Clarity ===
+- **1 (Strong Reject / Very Poor)**: The idea is fundamentally flawed in clarity — writing is incoherent, logical structure is severely broken, factual errors are pervasive, or the idea is incomprehensible.
+
+- **3 (Reject)**: The idea has substantial clarity issues — significant logical inconsistencies, multiple factual errors, poor structure, or unclear presentation that precludes understanding.
+
+- **5 (Borderline / Weak Reject)**: The idea shows some clarity but has notable weaknesses — some logical inconsistencies, occasional factual issues, or structural problems that need improvement.
+
+- **6 (Weak Accept / Borderline Accept)**: The idea has acceptable clarity overall — reasonable logical consistency, mostly factually correct, adequate structure, but may lack polish or precision.
+
+- **8 (Accept)**: The idea is clear and well-presented — logically consistent, factually sound, well-structured, and easy to understand. This is a solid idea in terms of clarity.
+
+- **10 (Strong Accept / Excellent)**: The idea demonstrates excellent clarity — highly logical, factually accurate, exceptionally well-structured, and clearly presented. The clarity significantly enhances the idea's value.
 
 Focus on evidence-based evaluation using both your knowledge and the provided reports."""
-#  Consider:
-# - High scores (7-10): The idea is logically consistent, factually sound, well-structured, and reasonable
-# - Medium scores (4-6): The idea has some inconsistencies or unclear aspects, but is generally reasonable
-# - Low scores (0-3): The idea has significant logical flaws, factual errors, or structural problems
         
         async def evaluate(self, idea_text: str, web_report: str, code_report: str, 
                           paper_report: str, persona: Dict[str, Any] = None, 
@@ -540,9 +615,8 @@ Focus on evidence-based evaluation using both your knowledge and the provided re
                 "properties": {
                     "score": {
                         "type": "number",
-                        "description": "Novelty score from 0 to 10, where 10 is highly novel and original, and 0 indicates significant overlap with existing work",
-                        "minimum": 0,
-                        "maximum": 10
+                        "description": "Novelty score using ICLR 6-level scale. Only allowed values: 1, 3, 5, 6, 8, 10",
+                        "enum": [1, 3, 5, 6, 8, 10]
                     },
                     "reason": {
                         "type": "string",
@@ -607,12 +681,22 @@ Based on the provided research reports describing related work, evaluate the nov
 5. **Overall Originality**: Considering all aspects, how original is this idea compared to the related work described in the reports?
 
 === Output Requirements ===
-Provide a score from 0 to 10 and a detailed reason explaining your evaluation.
+Provide a score using the ICLR 6-level scale (only allowed values: 1, 3, 5, 6, 8, 10) and a detailed reason explaining your evaluation.
+
+=== ICLR Scoring Scale for Novelty ===
+- **1 (Strong Reject / Very Poor)**: The idea has negligible novelty — essentially identical to existing work in methods, concepts, conclusions, and analysis approach. No meaningful contribution.
+
+- **3 (Reject)**: The idea has minimal novelty — significant overlap with existing work. Minor variations but no substantial differences in methods, concepts, or conclusions.
+
+- **5 (Borderline / Weak Reject)**: The idea shows some promise in novelty but also significant overlap — some novel aspects but many similarities with existing work. Needs more differentiation.
+
+- **6 (Weak Accept / Borderline Accept)**: The idea has acceptable novelty — reasonable differences from existing work in some aspects (methods, concepts, or conclusions), but may lack strong impact or originality.
+
+- **8 (Accept)**: The idea demonstrates decent novelty — clear differences from existing work in methods, concepts, or conclusions. The novelty is meaningful and contributes to the field.
+
+- **10 (Strong Accept / Excellent)**: The idea is highly novel and original — significant differences from existing work in multiple aspects. High novelty or impact, likely to lead to significant interest and follow-up.
+
 Focus on identifying specific similarities and differences with the related work described in the reports."""
-#  Consider:
-# - High scores (7-10): The idea is highly novel with significant differences from existing work in methods, concepts, or conclusions
-# - Medium scores (4-6): The idea has some novel aspects but also shares similarities with existing work
-# - Low scores (0-3): The idea has significant overlap with existing work in methods, concepts, conclusions, or analysis approaches
 
         async def evaluate(self, idea_parts: Dict[str, str], paper_report: str, 
                           web_report: str, persona: Dict[str, Any] = None, 
@@ -656,9 +740,8 @@ Focus on identifying specific similarities and differences with the related work
                 "properties": {
                     "score": {
                         "type": "number",
-                        "description": "Feasibility score from 0 to 10, where 10 is highly feasible and easy to implement, and 0 indicates significant implementation challenges",
-                        "minimum": 0,
-                        "maximum": 10
+                        "description": "Feasibility score using ICLR 6-level scale. Only allowed values: 1, 3, 5, 6, 8, 10",
+                        "enum": [1, 3, 5, 6, 8, 10]
                     },
                     "reason": {
                         "type": "string",
@@ -733,15 +816,24 @@ Based on the provided code repositories (file trees) and code research report, e
 
 === Output Requirements ===
 Provide:
-1. A score from 0 to 10 indicating feasibility
+1. A score using the ICLR 6-level scale (only allowed values: 1, 3, 5, 6, 8, 10) indicating feasibility
 2. A detailed reason explaining your assessment
 3. Pseudocode or an implementation plan showing how to integrate the available code repositories to implement the idea's methodology
 
+=== ICLR Scoring Scale for Feasibility ===
+- **1 (Strong Reject / Very Poor)**: The idea is fundamentally infeasible — missing critical code components, incompatible dependencies, or requires implementation from scratch with no available resources. Implementation is essentially impossible.
+
+- **3 (Reject)**: The idea has substantial feasibility challenges — major missing components, significant integration difficulties, or requires substantial new code development that makes implementation impractical.
+
+- **5 (Borderline / Weak Reject)**: The idea shows some feasibility but also significant challenges — some available code but requires considerable integration work, missing components, or complex dependencies that need resolution.
+
+- **6 (Weak Accept / Borderline Accept)**: The idea has acceptable feasibility — reasonable code availability and integration possibilities, but may require some additional work or components. Implementation is possible but not straightforward.
+
+- **8 (Accept)**: The idea is feasible — good code availability, reasonable integration possibilities, and can be implemented using existing resources with moderate effort. This is a solid idea in terms of feasibility.
+
+- **10 (Strong Accept / Excellent)**: The idea is highly feasible — excellent code availability, easy integration, minimal new development needed. Implementation can be done easily using available code repositories and libraries.
+
 The pseudocode should be clear and show how existing code repositories can be integrated to achieve the idea's goals."""
-# Consider:
-# - High scores (7-10): The idea can be easily implemented using available code with minimal new development
-# - Medium scores (4-6): The idea can be implemented but requires some integration work or additional components
-# - Low scores (0-3): The idea faces significant implementation challenges or requires substantial new code development
         
         async def evaluate(self, idea_text: str, code_report: str, 
                           github_file_trees: List[Dict[str, str]], 
