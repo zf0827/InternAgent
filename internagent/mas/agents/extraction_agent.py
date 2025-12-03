@@ -1,7 +1,7 @@
 """
 Extraction Agent for InternAgent
 
-Extracts key research components (motivation, research question, method,
+Extracts key research components (basic idea, motivation, research question, method,
 experimental setting, expected results) from ideas or papers.
 
 Supports:
@@ -9,6 +9,7 @@ Supports:
 - Local file input (PDF / DOCX)
 - DOI input (auto-download via utils.download_pdf_by_doi)
 - Semantic Scholar paper_id input (fetches open-access PDF)
+- PDF URL input (direct PDF download link)
 """
 
 import os
@@ -43,6 +44,7 @@ class ExtractionAgent(BaseAgent):
         - paper_path (PDF/DOCX file)
         - doi (string)
         - paper_id (string, Semantic Scholar ID)
+        - pdf url
     """
 
     def __init__(self, model, config: Dict[str, Any]):
@@ -87,7 +89,6 @@ class ExtractionAgent(BaseAgent):
             if not temp_pdf_path or not os.path.exists(temp_pdf_path):
                 raise AgentExecutionError(f"Failed to download PDF for URL {url}")
             input_text = extract_text_from_pdf(temp_pdf_path)
-            logger.info(f"ExtractionAgent: extracted text from PDF")
             source_type = url
 
         elif "doi" in context and context["doi"]:
@@ -144,13 +145,6 @@ class ExtractionAgent(BaseAgent):
             print("\n=== Extraction Results ===")
             print(json.dumps(response, indent=2, ensure_ascii=False))
             return response
-            # return {
-            #     "extracted_info": response,
-            #     "metadata": {
-            #         "source_type": source_type,
-            #         "input_length": len(input_text),
-            #     },
-            # }
 
         except Exception as e:
             logger.error(f"ExtractionAgent failed: {str(e)}")
@@ -237,11 +231,11 @@ class ExtractionAgent(BaseAgent):
     Please analyze the following input (which may be a research idea or full paper) and extract the following sections:
 
     1. **BASIC IDEA**
-    - A concise summary of the central concept or innovation.
-    - What is the core contribution or novel idea?
+    - A concise summary of the central innovation, the main technique and the key expected effect.
+    - Must NOT be vague, generic, or over-abstract.
 
     2. **MOTIVATION**
-    - Why is this research important or necessary?
+    - Why is this research important or necessary? Extract all reasons why the research is needed.
     - Break into separate, testable claims (e.g., problem statements, limitations of prior work, gaps in current methods).
     - Each motivation should express *a single rationale or need*.
 
@@ -256,23 +250,80 @@ class ExtractionAgent(BaseAgent):
     - Include both procedural steps and core design ideas, each as a separate claim.
 
     5. **EXPERIMENTAL SETTING**
-    - Summarize the experimental setup in atomic details like below:
-        - **Datasets:** which datasets or benchmarks are used?
-        - **Baselines:** what existing methods are compared against?
-        - **Metrics:** what evaluation metrics are applied?
-        - **Ablation Studies:** what components or hyperparameters are varied?
-        - **Implementation Details:** environment, training config, hardware, or key hyperparameters.
-    - Each item above should appear as a *separate atomic statement* or small list.
+    - **MUST FOLLOW THIS EXACT STRUCTURE** - First list the core experimental components, then describe the experiments:
 
-    6. **EXPECTED RESULTS**
-    - Summarize the main findings, expected outcomes, or hypotheses about results.
-    - Break into *independent claims* — each one measurable or testable (e.g., “Our method improves accuracy by X% over baseline”, “The ablation study shows the attention module improves recall”).
-    - Avoid narrative commentary; report factual expectations or results.
+    **Step 1: Core Experimental Components**
+        - "Datasets: [comma-separated list of all datasets used in the experiments]"
+        - "Baselines: [comma-separated list of all baseline models/methods compared against, grouped by proprietary and open-source]"
+        - "Metrics: [comma-separated list of all evaluation metrics used]"
+        - "Hardware: [specific hardware configuration used for experiments]"
+
+    **Step 2: Experiment Descriptions**
+    - Split into **TWO** categories (Main Experiments and Analysis Experiments):
+
+    **Main Experiments**
+        - **Group similar experimental setups together**: If multiple experiments share the same evaluation protocol, methodology, and purpose (e.g., benchmarking on different datasets), describe them as a SINGLE comprehensive experimental setup.
+        - Each merged main experiment item should describe:
+        • The unified experimental methodology and evaluation protocol
+        • All datasets/benchmarks evaluated (list them together)
+        • All baseline methods compared against (group by model type)
+        • Evaluation metrics applied across all evaluations
+        • Shared implementation details (environment, hardware, hyperparameters)
+        - **Example of merged description**: "Main Experiment: Benchmark evaluation on DABench, TableBench, and BIRD datasets comparing with proprietary models (GPT-4o, o4-mini, DeepSeek-R1, DeepSeek-V3.1, GPT-5) and open-source models (QwQ-32B, Qwen2.5-Coder-32B, Llama-3.3-70B, Qwen2.5-72B, TableLLM, Table-R1, OmniSQL, SQL-R1) using pass@1 and pass@3 metrics with GPT-4o-mini judge model on 8 A100 GPUs"
+        - **Only create separate items** when experiments have fundamentally different purposes, methodologies, or evaluation frameworks.
+
+   **Analysis Experiments** 
+        - Each item describes one analysis experiment in a single sentence containing:
+        • Type of analysis (ablation, sensitivity, diagnostic, etc.)
+        • Variable being changed/tested
+        • Measurement being taken
+        • Experimental setup context
+        - **Ensure distinct analysis dimensions**: Each analysis experiment should focus on a unique aspect (data scaling, training strategy, hyperparameters, evaluation methodology, etc.)
+        - **Avoid overlapping variables**: If multiple experiments test similar factors (e.g., both data volume and training epochs affect training dynamics), group them logically or ensure clear distinction
+        - **Cover all major analysis types mentioned in the paper like:
+        • Data scaling and volume effects
+        • Training strategy comparisons  
+        • Hyperparameter sensitivity
+        • Component contribution (filtering methods, reward design, etc.)
+        • Evaluation methodology robustness
+        • Model capability and scaling laws
+        • Training stability and convergence
+
+    **OUTPUT FORMAT FOR EXPERIMENTAL_SETTING**:
+    The array MUST start with the core components, then the experiment descriptions:
+    "Datasets: DABench, TableBench, BIRD, QRData",
+    "Baselines: proprietary models (GPT-4o, o4-mini, DeepSeek-R1, DeepSeek-V3.1, GPT-5), open-source models (QwQ-32B, Qwen2.5-Coder-32B, Llama-3.3-70B, Qwen2.5-72B, TableLLM, Table-R1, OmniSQL, SQL-R1)",
+    "Metrics: pass@1, pass@3, Rouge-L, exact match",
+    "Hardware: 8 A100 80G GPUs",
+    "Main Experiment: Benchmark evaluation on DABench, TableBench, and BIRD datasets comparing with proprietary models (GPT-4o, o4-mini, DeepSeek-R1, DeepSeek-V3.1, GPT-5) and open-source models (QwQ-32B, Qwen2.5-Coder-32B, Llama-3.3-70B, Qwen2.5-72B, TableLLM, Table-R1, OmniSQL, SQL-R1) using pass@1 and pass@3 metrics with GPT-4o-mini judge model on 8 A100 GPUs",
+    "Analysis Experiment: Ablation study testing the effect of training data volume (2K, 4K, 8K, 12K) on model performance across all benchmarks",
+    "Analysis Experiment: Comparison of different training strategies (SFT-only, zero-RL, SFT-then-RL, SFT-and-RL) on 7B model performance",
+    "... other analysis experiments ..."
+    ]
+
+   6. **EXPECTED RESULTS**
+    - Describe the **anticipated outcomes** and **hypothetical benefits** of this research idea.
+    - Focus on qualitative expectations about potential performance and advantages.
+    - Must NOT contain actual experimental results or numerical data from papers.
+    - Must NOT reuse exact quantitative findings from existing research.
+    - Break into *independent claims* — each describing one expected qualitative benefit.
+    - Use qualitative comparative expressions like:
+        • "Superior performance compared to state-of-the-art methods"
+        • "Improved efficiency with lower computational cost"
+        • "Enhanced stability during training process"
+        • "Better generalization across different domains"
+        • "Higher robustness to input variations"
+        • "Reduced training time and resource requirements"
+        • "Increased interpretability and transparency"
+        • "Stronger scalability for larger datasets"
+    - Split into:
+        • Expected qualitative benefits for Main Experiments
+        • Expected qualitative benefits for Analysis Experiments
 
     **RULES FOR ATOMIC CLAIMS**
     - Each claim must be a single, self-contained statement.
-    - Avoid compound sentences with "and", "but", or "while".
     - Focus on clarity, factual precision, and scientific verifiability.
+    - Do NOT infer, extrapolate, or add any information not present in the source.
     - Use **arrays/lists** for every section (even if only one claim).
 
     **OUTPUT FORMAT**
@@ -293,19 +344,76 @@ class ExtractionAgent(BaseAgent):
     def _build_system_prompt(self) -> str:
         """Define system-level model behavior."""
         return (
-            "You are an expert in scientific document analysis. "
-            "Your primary goals are:\n"
-            "1. Identify and separate *atomic claims* — small, self-contained facts or hypotheses.\n"
-            "2. Distinguish between motivation, research questions, methods, experimental settings, and expected results.\n"
-            "3. When describing experiments, explicitly include datasets, baselines, metrics, and ablation studies if mentioned.\n"
-            "4. When describing methods, emphasize step-by-step components, not narrative summaries.\n"
-            "5. Produce JSON strictly matching the provided schema — no extra commentary, no markdown, no text outside JSON.\n\n"
-            "Style and quality requirements:\n"
-            "- Be objective and fact-based; never speculate.\n"
-            "- Write clear, scientific English.\n"
-            "- Each claim or list item must be short (one sentence) and independently meaningful.\n"
-            "- Do not merge unrelated ideas; split them into separate entries.\n"
-            "- Output must be strictly machine-readable JSON."
+           """You are an expert scientific analysis agent. Your job is to transform a research idea or paper into structured, atomic, and evaluation-ready research components.
+
+            GENERAL RULES:
+            - Every output must be factual, concise, and mechanically verifiable.
+            - Split all content into *atomic items* — no compound sentences.
+            - Use formal academic English.
+            - Output MUST strictly match the JSON schema required by the user (arrays only).
+
+            SECTION-SPECIFIC RULES:
+
+            1. BASIC IDEA
+            - Must be ONE detailed sentence.
+            - Must summarize the *core innovation*, capturing the key novelty, the main method, and the key expected impact.
+            - Must NOT be vague, generic, or over-abstract.
+            2. MOTIVATION
+            - Extract distinct reasons why the research is needed.
+            - Each motivation must be a single factual need/gap/limitation.
+
+            3. RESEARCH QUESTION
+            - Each item must be a clearly answerable scientific question.
+
+            4. METHOD
+            - Break down the method into atomic technical components.
+            - Each item should describe *what* is done, not *why*.
+
+            5. EXPERIMENTAL SETTING
+           Must follow this exact structure:
+
+            **Step 1: Core Experimental Components such as** 
+            - "Datasets: [list all datasets]"
+            - "Baselines: [list all baselines, grouped by proprietary/open-source]"
+            - "Metrics: [list all evaluation metrics]"
+            - "Hardware: [specific hardware configuration]"
+
+            **Step 2: Experiment Descriptions**
+            Split into two categories:
+
+                **Main Experiments**
+                - **GROUP SIMILAR SETUPS**: Merge experiments that share the same evaluation protocol, methodology, and purpose into single comprehensive descriptions.
+                - Each merged item should describe: all datasets evaluated, all baseline comparisons, shared evaluation metrics, and common implementation details.
+                - **Only create separate items** for experiments with fundamentally different purposes or methodologies.
+                - Example: "Main Experiment: Benchmark evaluation on DatasetA, DatasetB, and DatasetC comparing with ModelX, ModelY using Accuracy and F1 metrics on 8 GPUs"
+
+                **Analysis Experiments**
+                - Ablation, sensitivity, diagnostic experiments and so on.
+                - What variable is changed and what is measured.
+                - One experiment per item.
+                - Examples: 
+                "Analysis Experiment: Ablation study testing the effect of training data volume on model performance"
+                "Analysis Experiment: Comparison of different training strategies on model performance"
+
+            **OUTPUT ORDER IS CRITICAL**: Always start with the core components, then main experiments, then analysis experiments.
+
+            6. EXPECTED RESULTS
+            - Must also be separated into two categories:
+                **Main Experiments: expected outcomes**
+                **Analysis Experiments: expected outcomes**
+            - Must NOT contain numerical results.
+            - Must NOT reuse exact results from papers.
+            - Should describe expected outcomes like:
+                - “Analysis Experiments:greater stability...”
+                - “Main Experiments: state-of-the-art performance...”
+
+            RESTRICTIONS:
+            - No speculation unrelated to the text.
+            - Each sentence must stand alone.
+            - Do NOT infer, extrapolate, or add any information not present in the source.
+            - Output MUST be pure JSON only, without any code block markers like ```json or ```, strictly matching the provided schema — no extra commentary, no markdown, no text outside JSON.
+            """
+
     )
 
 
