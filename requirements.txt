@@ -98,6 +98,7 @@ protobuf==5.29.5
 psutil==7.0.0
 ptyprocess==0.7.0
 pyasn1==0.6.1
+pyautogen>=0.2.0
 pyasn1_modules==0.4.2
 pycodestyle==2.14.0
 pycparser==2.22
