@@ -249,18 +249,15 @@ def fetch_arxiv_papers(query: str, max_results: int = 20, sort: str = "relevance
     """
     logger.info(f"Searching arXiv for: {query}")
     
-    # arXiv API URL
     search_url = "http://export.arxiv.org/api/query"
     
     # Sort parameter
     sort_param = "relevance" if sort == "relevance" else "submittedDate"
     
-    # Category filter
     cat_filter = ""
     if categories:
         cat_filter = " AND (" + " OR ".join([f"cat:{cat}" for cat in categories]) + ")"
     
-    # Search parameters
     date_filter = ""
     if before:
         try:
@@ -268,14 +265,16 @@ def fetch_arxiv_papers(query: str, max_results: int = 20, sort: str = "relevance
             y = b[0:4]
             m = b[5:7] if len(b) >= 7 else "12"
             d = b[8:10] if len(b) >= 10 else "31"
-            start = "190001010000"
+            start = "202401010000"
             end = f"{y}{m}{d}2359"
             date_filter = f" AND submittedDate:[{start} TO {end}]"
-            # sort_param = "submittedDate"
         except Exception:
             pass
+    q0 = str(query).strip()
+    use_raw = any(k in q0 for k in ["ti:", "abs:", "au:", "cat:", "AND", "OR", "("])
+    search_query_value = f"{q0}{cat_filter}{date_filter}" if use_raw else f"all:{q0}{cat_filter}{date_filter}"
     search_params = {
-        "search_query": f"all:{query}{cat_filter}{date_filter}",
+        "search_query": search_query_value,
         "max_results": max_results,
         "sortBy": sort_param,
         "sortOrder": "descending"
@@ -296,6 +295,168 @@ def fetch_arxiv_papers(query: str, max_results: int = 20, sort: str = "relevance
     
     except Exception as e:
         logger.error(f"Error searching arXiv: {e}")
+        return []   
+
+def fetch_arxiv_papers_debug_api(query: str, max_results: int = 20, sort: str = "relevance", categories: list = None, before: Optional[str] = None) -> list:
+    logger.info(f"Searching arXiv for: {query}")
+    search_url = "http://export.arxiv.org/api/query"
+    sort_param = "relevance" if sort == "relevance" else "submittedDate"
+    cat_filter = ""
+    if categories:
+        cat_filter = " AND (" + " OR ".join([f"cat:{cat}" for cat in categories]) + ")"
+    date_filter = ""
+    if before:
+        try:
+            b = str(before)
+            y = b[0:4]
+            m = b[5:7] if len(b) >= 7 else "12"
+            d = b[8:10] if len(b) >= 10 else "31"
+            start = "202401010000"
+            end = f"{y}{m}{d}2359"
+            date_filter = f" AND submittedDate:[{start} TO {end}]"
+        except Exception:
+            pass
+    q0 = str(query).strip()
+    use_raw = any(k in q0 for k in ["ti:", "abs:", "au:", "cat:", "AND", "OR", "("])
+    # eg. q0 = " ti:"transformer" AND abs:"reinforcement learning" "
+    search_query_value = f"{q0}{cat_filter}{date_filter}" if use_raw else f"all:{q0}{cat_filter}{date_filter}"
+    search_params = {
+        "search_query": search_query_value,
+        "max_results": max_results,
+        "sortBy": sort_param,
+        "sortOrder": "descending"
+    }
+    try:
+        response = requests.get(search_url, params=search_params)
+        print(f"[DEBUG] 实际发送的url: {response.url}")
+        if response.status_code != 200:
+            logger.error(f"arXiv search error: {response.status_code}")
+            return []
+        xml_data = response.text
+        papers = parse_arxiv_xml(xml_data)
+        logger.info(f"Get {len(papers)} papers from arXiv")
+        return papers
+    except Exception as e:
+        logger.error(f"Error searching arXiv: {e}")
+        return []
+        
+def fetch_alex_papers_debug_api(
+    query: str, 
+    max_results: int = 20, 
+    sort: str = "relevance",
+    before: Optional[str] = None
+) -> list:
+    """
+    使用 OpenAlex API 搜索论文
+    
+    Args:
+        query: 搜索查询,支持 title.search:, AND, OR 等
+        max_results: 最大返回结果数
+        sort: 排序方式 "relevance" 或 "publication_date"
+        before: 日期过滤,格式 "YYYY-MM-DD"
+    
+    Returns:
+        论文列表
+    """
+    logger.info(f"Searching OpenAlex for: {query}")
+    # https://api.openalex.org/works?page=1&filter=title_and_abstract.search:data-analytic+agent,title_and_abstract.search:data+science+agent,publication_year:2025&sort=relevance_score:desc&per_page=10&mailto=ui@openalex.org
+    base_url = "https://api.openalex.org/works"
+    
+    # 构建过滤器
+    filter_parts = []
+    
+    # 添加搜索查询
+    if query:
+        # OpenAlex 使用 filter 参数而不是 search 参数来处理复杂查询
+        # 但对于 title.search, abstract.search 等,可以直接放在 filter 中
+        filter_parts.append(query)
+
+    # 负向过滤掉 survey / benchmark / review 类论文
+    exclude_terms = [
+        "survey",
+        "review",
+        "benchmark",
+        "comparative study",
+        "empirical study",
+        "evaluation",
+        "datasets",
+    ]
+
+    # 添加日期过滤
+    filter_parts.append(f"from_publication_date:2024-01-01")
+    if before:
+        try:
+            # 格式: YYYY-MM-DD
+            # OpenAlex 使用 from_publication_date 和 to_publication_date
+            filter_parts.append(f"to_publication_date:{before}")
+        except Exception as e:
+            logger.warning(f"Date filter error: {e}")
+    
+    # 组合过滤器
+    filter_string = ",".join(filter_parts) if filter_parts else None
+    
+    # 设置排序
+    sort_param = "relevance_score:desc" if sort == "relevance" else "publication_date:desc"
+    
+    # 构建请求参数
+    params = {
+        "per-page": min(max_results, 200),  # OpenAlex 单页最多 200
+        "sort": sort_param,
+        "mailto": "your-email@example.com"  # 礼貌参数,获得更高请求限制
+    }
+    
+    if filter_string:
+        params["filter"] = filter_string
+    
+    try:
+        response = requests.get(base_url, params=params, timeout=30)
+        print(f"[DEBUG] 实际发送的url: {response.url}")
+        
+        if response.status_code != 200:
+            logger.error(f"OpenAlex search error: {response.status_code}")
+            logger.error(f"Response: {response.text[:500]}")
+            return []
+        
+        data = response.json()
+        results = data.get("results", [])
+        
+        # 转换为统一格式
+        papers = []
+        for work in results:
+            if any(term in work.get("title", "").lower() for term in exclude_terms):
+                continue
+            paper = {
+                "title": work.get("title", "N/A"),
+                "year": work.get("publication_year"),
+                "url": work.get("doi", work.get("id", "")),
+                "authors": [
+                    author.get("author", {}).get("display_name", "")
+                    for author in work.get("authorships", [])
+                ][:3],  # 前3位作者
+                "abstract": work.get("abstract_inverted_index"),  # 注意:OpenAlex 的摘要是倒排索引格式
+                "cited_by_count": work.get("cited_by_count", 0),
+                "publication_date": work.get("publication_date"),
+                "openalex_id": work.get("id")
+            }
+            
+            # 如果有 DOI,优先使用 DOI URL
+            if work.get("doi"):
+                paper["url"] = work["doi"]
+            elif work.get("id"):
+                paper["url"] = work["id"]
+            
+            papers.append(paper)
+        
+        logger.info(f"Get {len(papers)} papers from OpenAlex")
+        return papers
+        
+    except requests.exceptions.Timeout:
+        logger.error("OpenAlex API timeout")
+        return []
+    except Exception as e:
+        logger.error(f"Error searching OpenAlex: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 def select_papers(paper_bank, max_papers, rag_read_depth):
@@ -678,15 +839,29 @@ def download_pdf(pdf_url, save_folder="pdfs"):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36",
     }
+    
+    # 配置代理：优先使用环境变量，否则使用默认代理
+    proxy = os.environ.get('http_proxy') or os.environ.get('HTTP_PROXY') or \
+            os.environ.get('https_proxy') or os.environ.get('HTTPS_PROXY') or \
+            "http://127.0.0.1:2080"
+    
     try:
-        response = httpx.get(url=pdf_url,headers=headers, timeout=10, verify=False)
-        if response.status_code == 200:
-            with open(save_path, "wb") as file:
-                file.write(response.content)
-            return save_path
-        else:
-            logger.error(f"Failed to download PDF from {pdf_url}: {response.status_code}")
-            return None
+        client_kwargs = {
+            "headers": headers,
+            "timeout": 10,
+            "verify": False,
+            "follow_redirects": True,
+            "proxy": proxy,
+        }
+        with httpx.Client(**client_kwargs) as client:
+            response = client.get(url=pdf_url)
+            if response.status_code == 200:
+                with open(save_path, "wb") as file:
+                    file.write(response.content)
+                return save_path
+            else:
+                logger.error(f"Failed to download PDF from {pdf_url}: {response.status_code}")
+                return None
     except Exception as e:
         logger.error(f"Error downloading PDF from {pdf_url}: {e}")
         return None

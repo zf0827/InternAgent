@@ -162,7 +162,7 @@ class GitHubSearcher:
         base_url = "https://api.github.com/search/repositories"
         q = query
         if before:
-            q = f"{query} {date_field}:<{before}"
+            q = f"{query} -awesome -paper -survey -benchmark -review language:Python stars:>50 {date_field}:<{before} "
         params = {
             'q': q,
             'per_page': min(per_page, 100),
@@ -170,6 +170,30 @@ class GitHubSearcher:
         }
         try:
             response = self.session.get(base_url, params=params)
+            print(response.url)
+            response.raise_for_status()
+            self._handle_rate_limit(response.headers)
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            return {
+                'status': 'error',
+                'message': f"Request failed: {str(e)}",
+                'items': []
+            }
+
+    def search_repos_debug_api(self, query: str, per_page: int = 10, page: int = 1, before: Optional[str] = None, date_field: str = 'pushed') -> Dict:
+        base_url = "https://api.github.com/search/repositories"
+        q = query
+        if before:
+            q = f"{query} -awesome -paper -survey -benchmark -review language:Python stars:>50 {date_field}:<{before} "
+        params = {
+            'q': q,
+            'per_page': min(per_page, 100),
+            'page': page
+        }
+        try:
+            response = self.session.get(base_url, params=params)
+            print(response.url)
             response.raise_for_status()
             self._handle_rate_limit(response.headers)
             return response.json()

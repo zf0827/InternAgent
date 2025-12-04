@@ -35,7 +35,7 @@ class R1Model(BaseModel):
     def __init__(self, 
                 api_key: Optional[str] = None, 
                 base_url: Optional[str] = None,
-                model_name: str = "deepseek-v3", 
+                model_name: str = "DeepSeek-V3.2", 
                 max_tokens: int = 4096,
                 temperature: float = 0.7,
                 timeout: int = 60):
@@ -268,7 +268,7 @@ class R1Model(BaseModel):
         return cls(
             api_key=config.get("api_key"),
             base_url=config.get("base_url") or config.get("api_base"),
-            model_name=config.get("model_name", "deepseek-v3"),
+            model_name=config.get("model_name", "DeepSeek-V3.2"),
             max_tokens=config.get("max_tokens", 4096),
             temperature=config.get("temperature", 0.7),
             timeout=config.get("timeout", 60)

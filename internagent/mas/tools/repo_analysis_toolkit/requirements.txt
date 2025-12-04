@@ -1,0 +1,18 @@
+# Core dependencies
+networkx>=2.6.0
+tiktoken>=0.5.0
+
+# Optional dependencies for enhanced functionality
+grep-ast>=0.3.0  # For code structure extraction
+tree-sitter>=0.20.0  # For syntax parsing
+tree-sitter-language-pack>=0.1.0  # Language support
+
+# Parallel processing
+tqdm>=4.65.0  # Progress bars
+
+# HTTP requests (for LLM API calls)
+requests>=2.28.0
+
+# Optional: Jupyter notebook support
+# nbformat>=5.0.0
+

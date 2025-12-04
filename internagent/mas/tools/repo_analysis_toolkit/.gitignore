@@ -1,0 +1,42 @@
+# Result directories
+result/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment variables
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+

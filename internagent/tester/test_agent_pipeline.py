@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Agent Pipeline Test - 串联测试五个Agent
+Agent Pipeline Test - 串联测试Agent工作流
 
 测试流程:
-1. ExtractionAgent: PDF -> idea (提取结构化信息)
-2. ResearchAgent: idea -> SearchResults (深度搜索)
-3. ReportAgent: SearchResults -> reports (生成报告)
-4. GroundingAgent: reports + claims -> grounding_results (证据验证)
-5. EvaluationAgent: idea + reports + SearchResults -> evaluation (评估研究想法)
+1. ExtractionAgent: PDF -> idea (提取结构化信息，使用Idea.from_lists()创建Idea对象)
+2. ResearchAgentV2: idea -> SearchResults (深度搜索，返回三个平台的结果)
+3. ReportAgent: SearchResults -> reports (生成报告，返回三个报告列表)
+4. GroundingAgent: reports + claims -> grounding_results (证据验证，对六个部分分别处理)
+5. EvaluationAgent: SKIPPED (暂时跳过)
 
 参考: quick_test_deepresearch.py 和 test_report_agent.py
 """
@@ -18,7 +18,7 @@ import json
 import os
 import asyncio
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -26,7 +26,7 @@ sys.path.insert(0, str(project_root))
 
 from internagent.mas.models.model_factory import ModelFactory
 from internagent.mas.agents.agent_factory import AgentFactory
-from internagent.mas.tools.searchers.models import Idea, SearchResults
+from internagent.mas.tools.searchersv2.models import Idea, SearchResults
 
 # 配置日志 - 确保所有组件的logger都可以正常展示
 logging.basicConfig(
@@ -34,6 +34,90 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def load_pipeline_result(file_path: Path) -> Dict[str, Any]:
+    """
+    Load existing pipeline_result.json if it exists, otherwise return empty dict.
+    
+    Returns:
+        Dict with keys: search_results_dict, reports_data, grounding_result
+    """
+    if file_path.exists():
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Ensure all required keys exist
+                if "search_results_dict" not in data:
+                    data["search_results_dict"] = None
+                if "reports_data" not in data:
+                    data["reports_data"] = None
+                if "grounding_result" not in data:
+                    data["grounding_result"] = {}
+                return data
+        except Exception as e:
+            logger.warning(f"Failed to load existing pipeline_result.json: {e}, creating new file")
+            return {
+                "search_results_dict": None,
+                "reports_data": None,
+                "grounding_result": {}
+            }
+    else:
+        return {
+            "search_results_dict": None,
+            "reports_data": None,
+            "grounding_result": {}
+        }
+
+
+def save_pipeline_result(file_path: Path, data: Dict[str, Any]):
+    """
+    Save pipeline_result.json with proper formatting.
+    
+    Args:
+        file_path: Path to save the file
+        data: Dict with keys: search_results_dict, reports_data, grounding_result
+    """
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    logger.info(f"Saved pipeline_result to {file_path}")
+
+
+def update_pipeline_result(file_path: Path, 
+                           search_results_dict: Optional[Dict[str, Any]] = None,
+                           reports_data: Optional[Dict[str, Any]] = None,
+                           grounding_result_part: Optional[str] = None,
+                           grounding_result_claims: Optional[List[Dict[str, Any]]] = None):
+    """
+    Update pipeline_result.json with new data (append mode).
+    
+    Args:
+        file_path: Path to pipeline_result.json
+        search_results_dict: New search_results_dict to save
+        reports_data: New reports_data to save
+        grounding_result_part: Part name for grounding_result (e.g., "basic_idea")
+        grounding_result_claims: List of claim dicts for the part
+    """
+    # Load existing data
+    data = load_pipeline_result(file_path)
+    
+    # Update search_results_dict
+    if search_results_dict is not None:
+        data["search_results_dict"] = search_results_dict
+    
+    # Update reports_data
+    if reports_data is not None:
+        data["reports_data"] = reports_data
+    
+    # Update grounding_result for a specific part
+    if grounding_result_part is not None and grounding_result_claims is not None:
+        if "grounding_result" not in data:
+            data["grounding_result"] = {}
+        data["grounding_result"][grounding_result_part] = grounding_result_claims
+    
+    # Save updated data
+    save_pipeline_result(file_path, data)
 
 
 def load_environment_variables():
@@ -72,58 +156,6 @@ def load_environment_variables():
     except Exception as e:
         logger.error(f"Error loading LLM.env file: {e}")
         return False
-
-
-def extraction_to_idea(extraction_output: Dict[str, Any]) -> Idea:
-    """
-    将ExtractionAgent的输出转换为Idea对象。
-    
-    Args:
-        extraction_output: ExtractionAgent的输出字典，包含数组格式的字段
-        
-    Returns:
-        Idea对象
-    """
-    logger.info("Converting ExtractionAgent output to Idea object...")
-    
-    def join_list(items: List[str]) -> str:
-        """将字符串数组连接成字符串"""
-        if not items:
-            return ""
-        return "\n".join(items)
-    
-    # 提取各个字段（忽略basic_idea）
-    motivation = join_list(extraction_output.get("motivation", []))
-    research_question = join_list(extraction_output.get("research_question", []))
-    method = join_list(extraction_output.get("method", []))
-    experimental_setting = join_list(extraction_output.get("experimental_setting", []))
-    expected_results = join_list(extraction_output.get("expected_results", [])) if extraction_output.get("expected_results") else None
-    
-    # 构建raw_text：合并所有字段（忽略basic_idea）
-    parts = []
-    if motivation:
-        parts.append(f"Motivation: {motivation}")
-    if research_question:
-        parts.append(f"Research Question: {research_question}")
-    if method:
-        parts.append(f"Method: {method}")
-    if experimental_setting:
-        parts.append(f"Experimental Setting: {experimental_setting}")
-    if expected_results:
-        parts.append(f"Expected Results: {expected_results}")
-    raw_text = "\n\n".join(parts) if parts else None
-    
-    idea = Idea(
-        motivation=motivation,
-        research_question=research_question,
-        method=method,
-        experimental_setting=experimental_setting,
-        expected_results=expected_results,
-        raw_text=raw_text
-    )
-    
-    logger.info("Successfully converted extraction output to Idea")
-    return idea
 
 
 def load_personas(personas_file_path: Path, num_personas: int = 3) -> List[Dict[str, Any]]:
@@ -203,22 +235,16 @@ async def main():
         "_global_config": default_model_config
     }
     
-    # ResearchAgent配置
+    # ResearchAgentV2配置
     research_config = {
-        "name": "ResearchAgent",
+        "name": "ResearchAgentV2",
         "model_provider": "dsr1",
-        "max_iters": 0,  # 实际在 params 中控制
-        "max_results_per_source": 3,
-        "enable_code_search": True,
-        "enable_web_search": True,
-        "enable_scholar_search": True,
-        "paper_sources": ["arxiv", "semantic_scholar"],
-        "enable_filtering": True,
-        "enable_file_tree": True,  # 快速测试禁用文件树
-        "filter_top_k_papers": 10,
-        "filter_top_k_code": 6,
-        "filter_top_k_web": 10,
-        "top_k_readpage": 1, # 只阅读一个页面
+        "max_results_per_query": 8,
+        "enable_paper_filtering": True,
+        "paper_batch_size": 8,
+        "web_max_results": 8,
+        "topk_papers": 10,
+        "topk_web_pages": 10,
         "_global_config": default_model_config
     }
     
@@ -228,6 +254,12 @@ async def main():
         "model_provider": "dsr1",
         "temperature": 0.7,
         "system_prompt": "You are a helpful assistant that generates comprehensive reports.",
+        "extraction_config": {
+            "name": "ExtractionAgent",
+            "model_provider": "dsr1",
+            "extract_temperature": 0.3,
+            "_global_config": default_model_config
+        },
         "_global_config": default_model_config
     }
     
@@ -241,40 +273,32 @@ async def main():
         "_global_config": default_model_config
     }
     
-    # EvaluationAgent配置
-    evaluation_config = {
-        "name": "EvaluationAgent",
-        "description": "Evaluates research ideas from multiple aspects",
-        "model_provider": "dsr1",
-        "temperature": 0.7,
-        "_global_config": default_model_config,
-        "max_retries": 10,
-    }
     
-    # 4. 创建Agent实例
+    # 4. 初始化pipeline_result.json文件路径
+    pipeline_result_path = Path("/home/weiyunxiang/yunx/IdeaEvaluation/InternAgent/cache/pipeline_result.json")
+    pipeline_result_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # 5. 创建Agent实例
     logger.info("Creating agent instances...")
     try:
         extraction_agent = agent_factory.create_agent("extraction", extraction_config, model_factory)
         logger.info("ExtractionAgent created successfully")
         
-        research_agent = agent_factory.create_agent("research", research_config, model_factory)
-        logger.info("ResearchAgent created successfully")
+        research_agent = agent_factory.create_agent("researchv2", research_config, model_factory)
+        logger.info("ResearchAgentV2 created successfully")
         
         report_agent = agent_factory.create_agent("report", report_config, model_factory)
         logger.info("ReportAgent created successfully")
         
         grounding_agent = agent_factory.create_agent("grounding", grounding_config, model_factory)
         logger.info("GroundingAgent created successfully")
-        
-        evaluation_agent = agent_factory.create_agent("evaluation", evaluation_config, model_factory)
-        logger.info("EvaluationAgent created successfully")
     except Exception as e:
         logger.error(f"Failed to create agents: {e}")
         import traceback
         traceback.print_exc()
         raise
     
-    # 5. 执行ExtractionAgent (PDF -> idea)
+    # 6. 执行ExtractionAgent (PDF -> idea)
     print("\n" + "=" * 80)
     print("STEP 1: ExtractionAgent - PDF -> Idea")
     print("=" * 80)
@@ -302,52 +326,72 @@ async def main():
         traceback.print_exc()
         raise
     
-    # 6. 转换ExtractionAgent输出为Idea对象
-    logger.info("Converting extraction output to Idea object...")
-    idea = extraction_to_idea(extraction_result)
+    # 7. 转换ExtractionAgent输出为Idea对象
+    logger.info("Converting extraction output to Idea object using Idea.from_lists()...")
+    idea = Idea.from_lists(
+        basic_idea_list=extraction_result.get("basic_idea", []),
+        motivation_list=extraction_result.get("motivation", []),
+        research_question_list=extraction_result.get("research_question", []),
+        method_list=extraction_result.get("method", []),
+        experimental_setting_list=extraction_result.get("experimental_setting", []),
+        expected_results_list=extraction_result.get("expected_results", [])
+    )
     
     logger.info("=" * 80)
     logger.info("Converted Idea Object:")
     logger.info("=" * 80)
+    logger.info(f"Basic Idea: {idea.basic_idea[:200]}..." if len(idea.basic_idea) > 200 else f"Basic Idea: {idea.basic_idea}")
     logger.info(f"Motivation: {idea.motivation[:200]}..." if len(idea.motivation) > 200 else f"Motivation: {idea.motivation}")
     logger.info(f"Research Question: {idea.research_question[:200]}..." if len(idea.research_question) > 200 else f"Research Question: {idea.research_question}")
+    logger.info(f"Method: {idea.method[:200]}..." if len(idea.method) > 200 else f"Method: {idea.method}")
+    logger.info(f"Experimental Setting: {idea.experimental_setting[:200]}..." if len(idea.experimental_setting) > 200 else f"Experimental Setting: {idea.experimental_setting}")
+    logger.info(f"Expected Results: {idea.expected_results[:200]}..." if len(idea.expected_results) > 200 else f"Expected Results: {idea.expected_results}")
     print(f"\nIdea Summary:")
+    print(f"  Basic Idea: {idea.basic_idea[:100]}..." if len(idea.basic_idea) > 100 else f"  Basic Idea: {idea.basic_idea}")
     print(f"  Motivation: {idea.motivation[:100]}..." if len(idea.motivation) > 100 else f"  Motivation: {idea.motivation}")
     print(f"  Research Question: {idea.research_question[:100]}..." if len(idea.research_question) > 100 else f"  Research Question: {idea.research_question}")
-    
-    # 7. 执行ResearchAgent (idea -> SearchResults)
+    print(f"  Method: {idea.method[:100]}..." if len(idea.method) > 100 else f"  Method: {idea.method}")
+    print(f"  Experimental Setting: {idea.experimental_setting[:100]}..." if len(idea.experimental_setting) > 100 else f"  Experimental Setting: {idea.experimental_setting}")
+    print(f"  Expected Results: {idea.expected_results[:100]}..." if len(idea.expected_results) > 100 else f"  Expected Results: {idea.expected_results}")
+   
+    # 8. 执行ResearchAgentV2 (idea -> SearchResults)
     print("\n" + "=" * 80)
-    print("STEP 2: ResearchAgent - Idea -> SearchResults")
+    print("STEP 2: ResearchAgentV2 - Idea -> SearchResults")
     print("=" * 80)
     
     research_context = {
         "idea": idea.to_dict()
     }
-    research_params = {
-        "max_iters": 1  # 真正控制搜索次数
-    }
+    research_params = {}
     
     try:
-        logger.info("Executing ResearchAgent...")
+        logger.info("Executing ResearchAgentV2...")
         research_result = await research_agent.execute(research_context, research_params)
         
         search_results_dict = research_result.get("search_results", {})
         search_results = SearchResults.from_dict(search_results_dict)
         
-        # 打印ResearchAgent的中间结果
+        # 保存search_results到pipeline_result.json（第一部分）
+        update_pipeline_result(
+            pipeline_result_path,
+            search_results_dict=search_results_dict
+        )
+        logger.info(f"Saved search_results_dict to pipeline_result.json")
+        
+        # 打印ResearchAgentV2的中间结果
         logger.info("=" * 80)
-        logger.info("ResearchAgent Output Summary:")
+        logger.info("ResearchAgentV2 Output Summary:")
         logger.info("=" * 80)
         logger.info(search_results.summary())
         print("\n" + search_results.summary())
         
     except Exception as e:
-        logger.error(f"ResearchAgent execution failed: {e}")
+        logger.error(f"ResearchAgentV2 execution failed: {e}")
         import traceback
         traceback.print_exc()
         raise
     
-    # 8. 执行ReportAgent (SearchResults -> reports)
+    # 9. 执行ReportAgent (SearchResults -> reports)
     print("\n" + "=" * 80)
     print("STEP 3: ReportAgent - SearchResults -> Reports")
     print("=" * 80)
@@ -363,25 +407,46 @@ async def main():
         logger.info("Executing ReportAgent...")
         report_result = await report_agent.execute(report_context, report_params)
         
+        # 获取三个报告列表
+        web_reports = report_result.get("web_reports", [])
+        code_reports = report_result.get("code_reports", [])
+        paper_reports = report_result.get("paper_reports", [])
+        
+        # 保存reports_data到pipeline_result.json（第二部分）
+        reports_data = {
+            "web_reports": web_reports,
+            "code_reports": code_reports,
+            "paper_reports": paper_reports
+        }
+        update_pipeline_result(
+            pipeline_result_path,
+            reports_data=reports_data
+        )
+        logger.info(f"Saved reports_data to pipeline_result.json")
+        
         # 打印ReportAgent的中间结果
         logger.info("=" * 80)
         logger.info("ReportAgent Output:")
         logger.info("=" * 80)
-        logger.info(f"Web Report Length: {len(report_result.get('web_report', ''))} characters")
-        logger.info(f"Code Report Length: {len(report_result.get('code_report', ''))} characters")
-        logger.info(f"Paper Report Length: {len(report_result.get('paper_report', ''))} characters")
-        print(f"\nReport Lengths:")
-        print(f"  Web Report: {len(report_result.get('web_report', ''))} characters")
-        print(f"  Code Report: {len(report_result.get('code_report', ''))} characters")
-        print(f"  Paper Report: {len(report_result.get('paper_report', ''))} characters")
+        logger.info(f"Web Reports: {len(web_reports)} reports")
+        logger.info(f"Code Reports: {len(code_reports)} reports")
+        logger.info(f"Paper Reports: {len(paper_reports)} reports")
+        print(f"\nReport Counts:")
+        print(f"  Web Reports: {len(web_reports)}")
+        print(f"  Code Reports: {len(code_reports)}")
+        print(f"  Paper Reports: {len(paper_reports)}")
         
         # 打印报告预览
-        if report_result.get('web_report'):
-            logger.info(f"Web Report Preview: {report_result['web_report'][:500]}...")
-        if report_result.get('code_report'):
-            logger.info(f"Code Report Preview: {report_result['code_report'][:500]}...")
-        if report_result.get('paper_report'):
-            logger.info(f"Paper Report Preview: {report_result['paper_report'][:500]}...")
+        if web_reports:
+            first_web_report = web_reports[0].get("content", {})
+            report_content = first_web_report.get("report_content", "")
+            logger.info(f"First Web Report Preview: {report_content[:500]}..." if len(report_content) > 500 else f"First Web Report Preview: {report_content}")
+        if code_reports:
+            first_code_report = code_reports[0].get("content", {})
+            report_content = first_code_report.get("report_content", "")
+            logger.info(f"First Code Report Preview: {report_content[:500]}..." if len(report_content) > 500 else f"First Code Report Preview: {report_content}")
+        if paper_reports:
+            logger.info(f"First Paper Report Title: {paper_reports[0].get('paper_metadata', {}).get('title', 'Unknown')}")
         
     except Exception as e:
         logger.error(f"ReportAgent execution failed: {e}")
@@ -389,13 +454,13 @@ async def main():
         traceback.print_exc()
         raise
     
-    # 9. 循环执行GroundingAgent (对每个part)
+    # 10. 循环执行GroundingAgent (对每个part)
     print("\n" + "=" * 80)
     print("STEP 4: GroundingAgent - Reports + Claims -> Grounding Results")
     print("=" * 80)
     
-    # 准备parts列表（忽略basic_idea）
-    parts = ["motivation", "research_question", "method", "experimental_setting", "expected_results"]
+    # 准备六个部分
+    parts = ["basic_idea", "motivation", "research_question", "method", "experimental_setting", "expected_results"]
     
     all_grounding_results = {}
     grounding_params = {
@@ -404,296 +469,57 @@ async def main():
     }
     
     for part in parts:
-        if part in extraction_result and extraction_result[part]:
-            logger.info(f"Processing part: {part}")
-            
-            grounding_context = {
-                "claims": {part: extraction_result[part]},
-                "reports": {
-                    "web_report": report_result.get("web_report", ""),
-                    "code_report": report_result.get("code_report", ""),
-                    "paper_report": report_result.get("paper_report", "")
-                }
+        # 从idea对象获取对应的*_list字段作为claims
+        claims_list = getattr(idea, f"{part}_list", [])
+        if not claims_list:
+            logger.info(f"Skipping part '{part}': no claims found")
+            continue
+        
+        logger.info(f"Processing part: {part} ({len(claims_list)} claims)")
+        
+        grounding_context = {
+            "claims": {part: claims_list},
+            "reports": {
+                "web_reports": web_reports,
+                "code_reports": code_reports,
+                "paper_reports": paper_reports
             }
-            
-            try:
-                grounding_result = await grounding_agent.execute(grounding_context, grounding_params)
-                all_grounding_results[part] = grounding_result.get("grounding_results", [])
-                
-                # 打印每个part的grounding结果
-                logger.info("=" * 80)
-                logger.info(f"GroundingAgent Output for part '{part}':")
-                logger.info("=" * 80)
-                logger.info(json.dumps(grounding_result, indent=2, ensure_ascii=False))
-                print(f"\nGrounding Results for '{part}': {len(grounding_result.get('grounding_results', []))} claims processed")
-                
-            except Exception as e:
-                logger.error(f"GroundingAgent execution failed for part '{part}': {e}")
-                import traceback
-                traceback.print_exc()
-                # 继续处理其他parts
-                continue
-    
-    # 10. 执行EvaluationAgent (idea + reports + SearchResults -> evaluation)
-    print("\n" + "=" * 80)
-    print("STEP 5: EvaluationAgent - Idea + Reports + SearchResults -> Evaluation")
-    print("=" * 80)
-    
-    # 加载personas（只选3个）
-    cache_dir = project_root / "cache"
-    personas_file = cache_dir / "reviewer_personas_redistributed.json"
-    # 如果文件不存在，尝试从环境变量或相对路径查找
-    if not personas_file.exists():
-        # 尝试从环境变量获取路径
-        env_personas_path = os.getenv("PERSONAS_FILE_PATH")
-        if env_personas_path and Path(env_personas_path).exists():
-            personas_file = Path(env_personas_path)
-        else:
-            # 尝试项目根目录下的 cache 目录
-            alt_cache_dir = project_root.parent / "cache"
-            alt_personas_file = alt_cache_dir / "reviewer_personas_redistributed.json"
-            if alt_personas_file.exists():
-                personas_file = alt_personas_file
-    
-    personas = load_personas(personas_file, num_personas=3)
-    
-    if not personas:
-        logger.warning("No personas loaded, skipping EvaluationAgent")
-        all_evaluation_results = []
-    else:
-        logger.info(f"Loaded {len(personas)} personas for evaluation")
-        
-        # 准备基础context
-        base_evaluation_context = {
-            "idea": idea.to_dict(),
-            "search_results": search_results_dict,
-            "web_report": report_result.get("web_report", ""),
-            "code_report": report_result.get("code_report", ""),
-            "paper_report": report_result.get("paper_report", "")
         }
-        
-        evaluation_params = {
-            "temperature": 0.7
-        }
-        
-        all_evaluation_results = []
         
         try:
-            for idx, persona in enumerate(personas, 1):
-                logger.info(f"Evaluating with persona {idx}/{len(personas)}")
-                print(f"\n[{idx}/{len(personas)}] Evaluating with persona {idx}...")
-                
-                # 为当前人格创建context
-                eval_context = base_evaluation_context.copy()
-                eval_context["persona"] = persona
-                
-                # 执行评估
-                eval_result = await evaluation_agent.execute(eval_context, evaluation_params)
-                
-                # 保存结果
-                result_with_persona = {
-                    "persona_index": idx,
-                    "persona": persona,
-                    "evaluation": eval_result
-                }
-                all_evaluation_results.append(result_with_persona)
-                
-                # 打印当前人格的评估结果摘要
-                clarity_score = eval_result.get("clarity", {}).get("score", "N/A")
-                novelty_score = eval_result.get("novelty", {}).get("score", "N/A")
-                feasibility_score = eval_result.get("feasibility", {}).get("score", "N/A")
-                overall_rating = eval_result.get("overall", {}).get("overall_rating", "N/A")
-                print(f"  Persona {idx} Results: Clarity={clarity_score}/10, "
-                      f"Novelty={novelty_score}/10, Feasibility={feasibility_score}/10, "
-                      f"Overall Rating={overall_rating}/10")
-                
+            grounding_result = await grounding_agent.execute(grounding_context, grounding_params)
+            grounding_claims = grounding_result.get("grounding_results", [])
+            all_grounding_results[part] = grounding_claims
+            
+            # 保存grounding_result到pipeline_result.json（第三部分，按part保存）
+            update_pipeline_result(
+                pipeline_result_path,
+                grounding_result_part=part,
+                grounding_result_claims=grounding_claims
+            )
+            logger.info(f"Saved grounding_result for part '{part}' to pipeline_result.json")
+            
+            # 打印每个part的grounding结果
+            logger.info("=" * 80)
+            logger.info(f"GroundingAgent Output for part '{part}':")
+            logger.info("=" * 80)
+            logger.info(json.dumps(grounding_result, indent=2, ensure_ascii=False))
+            print(f"\nGrounding Results for '{part}': {len(grounding_claims)} claims processed")
+            
         except Exception as e:
-            logger.error(f"EvaluationAgent execution failed: {e}")
+            logger.error(f"GroundingAgent execution failed for part '{part}': {e}")
             import traceback
             traceback.print_exc()
-            # 继续执行，不中断整个流程
+            # 继续处理其他parts
+            continue
     
-    # 11. 保存和打印最终结果
+    # 11. 跳过EvaluationAgent
     print("\n" + "=" * 80)
-    print("FINAL RESULTS SUMMARY")
+    print("STEP 5: EvaluationAgent - SKIPPED (not implemented yet)")
     print("=" * 80)
-    
-    # 构建search_results_summary，包含每一类的第一个resource的详细资料
-    search_results_summary = {
-        "total_count": search_results.total_count,
-        "papers": {
-            "count": len(search_results.papers),
-            "first_item": search_results.papers[0].to_dict() if search_results.papers else None
-        },
-        "github_repos": {
-            "count": len(search_results.github_repos),
-            "first_item": search_results.github_repos[0].to_dict() if search_results.github_repos else None
-        },
-        "kaggle_results": {
-            "count": len(search_results.kaggle_results),
-            "first_item": search_results.kaggle_results[0].to_dict() if search_results.kaggle_results else None
-        },
-        "web_pages": {
-            "count": len(search_results.web_pages),
-            "first_item": search_results.web_pages[0].to_dict() if search_results.web_pages else None
-        },
-        "scholar_results": {
-            "count": len(search_results.scholar_results),
-            "first_item": search_results.scholar_results[0].to_dict() if search_results.scholar_results else None
-        }
-    }
-    
-    final_results = {
-        "extraction_output": extraction_result,
-        "idea": idea.to_dict(),
-        "search_results_summary": search_results_summary,
-        "reports": {
-            "web_report": report_result.get("web_report", ""),
-            "code_report": report_result.get("code_report", ""),
-            "paper_report": report_result.get("paper_report", "")
-        },
-        "grounding_results": all_grounding_results,
-        "evaluation_results": all_evaluation_results
-    }
-    
-    logger.info("=" * 80)
-    logger.info("Final Results Summary:")
-    logger.info("=" * 80)
-    logger.info(json.dumps(final_results, indent=2, ensure_ascii=False))
-    
-    print("\n" + "=" * 80)
-    print("DETAILED RESULTS")
-    print("=" * 80)
-    
-    # 打印Pipeline执行摘要
-    print("\nPipeline Execution Summary:")
-    print(f"  - Extraction: {len(extraction_result.get('motivation', []))} motivation claims, "
-          f"{len(extraction_result.get('research_question', []))} research questions")
-    print(f"  - Research: {search_results.total_count} total sources found")
-    print(f"  - Reports: Generated 3 reports")
-    print(f"  - Grounding: Processed {len(all_grounding_results)} parts")
-    print(f"  - Evaluation: Processed {len(all_evaluation_results)} personas")
-    
-    # 打印SearchResults详细资料（每一类的第一个resource）
-    print("\n" + "-" * 80)
-    print("SEARCH RESULTS SUMMARY (First Item of Each Category)")
-    print("-" * 80)
-    
-    if search_results.papers:
-        print(f"\nPapers ({len(search_results.papers)} total):")
-        first_paper = search_results.papers[0]
-        print(f"  Title: {first_paper.title}")
-        print(f"  URL: {first_paper.url}")
-        print(f"  Authors: {', '.join(first_paper.authors) if first_paper.authors else 'N/A'}")
-        if first_paper.description:
-            print(f"  Description: {first_paper.description[:200]}..." if len(first_paper.description) > 200 else f"  Description: {first_paper.description}")
-        if first_paper.year:
-            print(f"  Year: {first_paper.year}")
-        if first_paper.citations is not None:
-            print(f"  Citations: {first_paper.citations}")
-    
-    if search_results.github_repos:
-        print(f"\nGitHub Repositories ({len(search_results.github_repos)} total):")
-        first_repo = search_results.github_repos[0]
-        print(f"  Title: {first_repo.title}")
-        print(f"  URL: {first_repo.url}")
-        if first_repo.description:
-            print(f"  Description: {first_repo.description[:200]}..." if len(first_repo.description) > 200 else f"  Description: {first_repo.description}")
-    
-    if search_results.kaggle_results:
-        print(f"\nKaggle Results ({len(search_results.kaggle_results)} total):")
-        first_kaggle = search_results.kaggle_results[0]
-        print(f"  Title: {first_kaggle.title}")
-        print(f"  URL: {first_kaggle.url}")
-        if first_kaggle.description:
-            print(f"  Description: {first_kaggle.description[:200]}..." if len(first_kaggle.description) > 200 else f"  Description: {first_kaggle.description}")
-    
-    if search_results.web_pages:
-        print(f"\nWeb Pages ({len(search_results.web_pages)} total):")
-        first_web = search_results.web_pages[0]
-        print(f"  Title: {first_web.title}")
-        print(f"  URL: {first_web.url}")
-        if first_web.description:
-            print(f"  Description: {first_web.description[:200]}..." if len(first_web.description) > 200 else f"  Description: {first_web.description}")
-    
-    if search_results.scholar_results:
-        print(f"\nScholar Results ({len(search_results.scholar_results)} total):")
-        first_scholar = search_results.scholar_results[0]
-        print(f"  Title: {first_scholar.title}")
-        print(f"  URL: {first_scholar.url}")
-        print(f"  Authors: {', '.join(first_scholar.authors) if first_scholar.authors else 'N/A'}")
-        if first_scholar.description:
-            print(f"  Description: {first_scholar.description[:200]}..." if len(first_scholar.description) > 200 else f"  Description: {first_scholar.description}")
-        if first_scholar.year:
-            print(f"  Year: {first_scholar.year}")
-        if first_scholar.citations is not None:
-            print(f"  Citations: {first_scholar.citations}")
-    
-    # 打印报告全长
-    print("\n" + "-" * 80)
-    print("REPORTS (Full Content)")
-    print("-" * 80)
-    
-    web_report = report_result.get("web_report", "")
-    code_report = report_result.get("code_report", "")
-    paper_report = report_result.get("paper_report", "")
-    
-    print(f"\nWeb Report ({len(web_report)} characters):")
-    print(web_report)
-    
-    print(f"\nCode Report ({len(code_report)} characters):")
-    print(code_report)
-    
-    print(f"\nPaper Report ({len(paper_report)} characters):")
-    print(paper_report)
-    
-    # 打印三个人的评分、理由等信息
-    if all_evaluation_results:
-        print("\n" + "=" * 80)
-        print("EVALUATION RESULTS (All Personas)")
-        print("=" * 80)
-        
-        for idx, result_item in enumerate(all_evaluation_results, 1):
-            persona = result_item["persona"]
-            evaluation = result_item["evaluation"]
-            
-            print("\n" + "-" * 80)
-            print(f"PERSONA {idx}: {persona.get('background', 'N/A')[:80]}...")
-            print("-" * 80)
-            
-            clarity = evaluation.get("clarity", {})
-            novelty = evaluation.get("novelty", {})
-            feasibility = evaluation.get("feasibility", {})
-            overall = evaluation.get("overall", {})
-            
-            print(f"\nClarity Score: {clarity.get('score', 'N/A')}/10")
-            print(f"Clarity Reason: {clarity.get('reason', 'N/A')}")
-            
-            print(f"\nNovelty Score: {novelty.get('score', 'N/A')}/10")
-            print(f"Novelty Reason: {novelty.get('reason', 'N/A')}")
-            
-            print(f"\nFeasibility Score: {feasibility.get('score', 'N/A')}/10")
-            print(f"Feasibility Reason: {feasibility.get('reason', 'N/A')}")
-            if feasibility.get('pseudocode'):
-                print(f"Feasibility Pseudocode:\n{feasibility.get('pseudocode', 'N/A')}")
-            
-            print(f"\nOverall Summary: {overall.get('summary', 'N/A')}")
-            print(f"Overall Rating: {overall.get('overall_rating', 'N/A')}/10")
-    
-    
-    print("\n" + "=" * 80)
-    print("Agent Pipeline Test Completed Successfully!")
-    print("=" * 80)
-    
-    # 保存结果到文件（注意：reports可能很长，保存完整内容）
-    output_file = cache_dir / "agent_pipeline_results_oral.json"
-    try:
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(final_results, f, ensure_ascii=False, indent=2)
-        logger.info(f"Results saved to: {output_file}")
-        print(f"\nResults saved to: {output_file}")
-    except Exception as e:
-        logger.error(f"Failed to save results: {e}")
+    logger.info("EvaluationAgent execution skipped as per requirements")
+    print("EvaluationAgent execution skipped. Pipeline completed up to grounding step.")
+
 
 
 if __name__ == "__main__":

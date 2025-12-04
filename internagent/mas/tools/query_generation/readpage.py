@@ -53,7 +53,7 @@ def extract_structured(content: str, goal: str, max_retries: int = 2) -> Dict[st
     ds_api_key = os.getenv("DS_API_KEY")
     if ds_api_key:
         lm = dspy.LM(
-            model="openai/deepseek-v3",
+            model="openai/DeepSeek-V3.2",
             api_key=ds_api_key,
             api_base=os.getenv("DS_API_BASE_URL")
         )

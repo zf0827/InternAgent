@@ -107,7 +107,7 @@ class WebSearcher:
 
         Args:
             query: Search query
-            before: Optional date filter
+            before: Optional date filter, only year-level precision
 
         Returns:
             List of Source objects
@@ -118,32 +118,15 @@ class WebSearcher:
         contains_chinese = any('\u4E00' <= char <= '\u9FFF' for char in query)
 
         tbs = None
-        if before:
-            try:
-                b = str(before)
-                mmddyyyy = f"{b[5:7]}/{b[8:10]}/{b[0:4]}"
-                tbs = f"cdr:1,cd_max:{mmddyyyy}"
-            except Exception:
-                pass
-        if contains_chinese:
-            payload = json.dumps({
-                "q": query,
-                "location": "China",
-                "gl": "cn",
-                "hl": "zh-cn",
-                "num": self.max_results,
-                **({"tbs": tbs} if tbs else {})
-            })
-        else:
-            payload = json.dumps({
-                "q": query,
-                "location": "United States",
-                "gl": "us",
-                "hl": "en",
-                "num": self.max_results,
-                **({"tbs": tbs} if tbs else {})
-            })
-
+        query += " AND (site:x.com OR site:medium.com OR site:towardsdatascience.com OR site:substack.com OR site:reddit.com/r/MachineLearning)"
+        payload = json.dumps({
+            "q": query,
+            "location": "China" if contains_chinese else "United States",
+            "gl": "cn" if contains_chinese else "us",
+            "hl": "zh-cn" if contains_chinese else "en",
+            "num": self.max_results,
+            **({"tbs": tbs} if tbs else {})
+        })
         headers = {
             'X-API-KEY': self.api_key,
             'Content-Type': 'application/json'
@@ -164,62 +147,103 @@ class WebSearcher:
 
         data = res.read()
         results = json.loads(data.decode("utf-8"))
-
-        sources = []
-
+        sources: List[Source] = []
         try:
             if "organic" not in results:
                 logger.warning(f"No results found for query: {query}")
                 return []
-
             for idx, page in enumerate(results["organic"], 1):
-                # Extract information
                 title = page.get("title", "Untitled")
                 link = page.get("link", "")
                 snippet = page.get("snippet", "")
                 date = page.get("date", "")
                 source_name = page.get("source", "")
-
-                # Create description
-                description_parts = []
-                if snippet:
-                    description_parts.append(snippet)
-                if date:
-                    description_parts.append(f"Published: {date}")
-                if source_name:
-                    description_parts.append(f"Source: {source_name}")
-
-                description = " | ".join(description_parts)
-
-                source = Source(
+                description = " | ".join([p for p in [snippet, f"Published: {date}" if date else None, f"Source: {source_name}" if source_name else None] if p])
+                s = Source(
                     title=title,
                     url=link,
                     source_type=SourceType.WEBPAGE,
                     platform=Platform.GOOGLE_SEARCH,
                     description=description,
-                    metadata={
-                        "date": date,
-                        "source": source_name,
-                        "snippet": snippet,
-                        "rank": idx
-                    },
+                    metadata={"date": date, "source": source_name, "snippet": snippet, "rank": idx},
                     timestamp=date or None,
                     web_source_name=source_name or None,
-                    web_rank=idx
+                    web_rank=idx,
                 )
-                if before and date:
-                    try:
-                        # best-effort lexical compare for yyyy-mm-dd or similar
-                        if len(date) >= 10 and date[0:4].isdigit():
-                            if date > before:
-                                continue
-                    except Exception:
-                        pass
-                sources.append(source)
-
+                sources.append(s)
         except Exception as e:
             logger.error(f"Error parsing Google search results: {e}")
+        return sources
 
+    def _google_search_debug_api(self, query: str, before: str = None) -> List[Source]:
+        conn = http.client.HTTPSConnection("google.serper.dev")
+        contains_chinese = any('\u4E00' <= char <= '\u9FFF' for char in query)
+        tbs = None
+        # if before:
+        #     try:
+        #         b = str(before)
+        #         mmddyyyy = f"{b[5:7]}/{b[8:10]}/{b[0:4]}"
+        #         tbs = f"cdr:1,cd_max:{mmddyyyy}"
+        #     except Exception:
+        #         pass
+        query += " AND (site:x.com OR site:medium.com OR site:towardsdatascience.com OR site:substack.com OR site:reddit.com/r/MachineLearning)"
+        payload = json.dumps({
+            "q": query,
+            "location": "China" if contains_chinese else "United States",
+            "gl": "cn" if contains_chinese else "us",
+            "hl": "zh-cn" if contains_chinese else "en",
+            "num": self.max_results,
+            **({"tbs": tbs} if tbs else {})
+        })
+        headers = {
+            'X-API-KEY': self.api_key,
+            'Content-Type': 'application/json'
+        }
+        for i in range(5):
+            try:
+                conn.request("POST", "/search", payload, headers)
+                res = conn.getresponse()
+                break
+            except Exception as e:
+                logger.warning(f"Attempt {i+1}/5 failed: {e}")
+                if i == 4:
+                    logger.error("Google search timeout after 5 attempts")
+                    return []
+                continue
+        data = res.read()
+        results = json.loads(data.decode("utf-8"))
+        sources: List[Source] = []
+        try:
+            if "organic" not in results:
+                return []
+            for idx, page in enumerate(results["organic"], 1):
+                title = page.get("title", "Untitled")
+                link = page.get("link", "")
+                snippet = page.get("snippet", "")
+                date = page.get("date", "")
+                source_name = page.get("source", "")
+                description = " | ".join([p for p in [snippet, f"Published: {date}" if date else None, f"Source: {source_name}" if source_name else None] if p])
+                s = Source(
+                    title=title,
+                    url=link,
+                    source_type=SourceType.WEBPAGE,
+                    platform=Platform.GOOGLE_SEARCH,
+                    description=description,
+                    metadata={"date": date, "source": source_name, "snippet": snippet, "rank": idx},
+                    timestamp=date or None,
+                    web_source_name=source_name or None,
+                    web_rank=idx,
+                )
+                # if before and date:
+                #     try:
+                #         if len(date) >= 10 and date[0:4].isdigit():
+                #             if date > before:
+                #                 continue
+                #     except Exception:
+                #         pass
+                sources.append(s)
+        except Exception as e:
+            logger.error(f"Error parsing Google search results: {e}")
         return sources
 
     def _google_scholar_search(self, query: str, before: str = None) -> List[Source]:
@@ -228,18 +252,17 @@ class WebSearcher:
 
         Args:
             query: Search query
-            before: Optional date filter
+            before: Optional date filter, only year-level precision
 
         Returns:
             List of Source objects
         """
         conn = http.client.HTTPSConnection("google.serper.dev")
-
         payload = json.dumps({
             "q": query,
+            "as_ylo": 2023,
             "num": self.max_results
         })
-
         headers = {
             'X-API-KEY': self.api_key,
             'Content-Type': 'application/json'
@@ -257,19 +280,14 @@ class WebSearcher:
                     logger.error("Google Scholar search timeout after 5 attempts")
                     return []
                 continue
-
         data = res.read()
         results = json.loads(data.decode("utf-8"))
-
-        sources = []
-
+        sources: List[Source] = []
         try:
             if "organic" not in results:
                 logger.warning(f"No scholar results found for query: {query}")
                 return []
-
             for idx, page in enumerate(results["organic"], 1):
-                # Extract information
                 title = page.get("title", "Untitled")
                 link = page.get("link", "")
                 snippet = page.get("snippet", "")
@@ -277,17 +295,8 @@ class WebSearcher:
                 cited_by = page.get("citedBy")
                 publication_info = page.get("publicationInfo", "")
                 pdf_url = page.get("pdfUrl", "")
-
-                # Create description
-                description_parts = []
-                if snippet:
-                    description_parts.append(snippet)
-                if publication_info:
-                    description_parts.append(publication_info)
-
-                description = " | ".join(description_parts)
-
-                source = Source(
+                description = " | ".join([p for p in [snippet, publication_info] if p])
+                s = Source(
                     title=title,
                     url=link or "No link available",
                     source_type=SourceType.SCHOLAR,
@@ -295,12 +304,7 @@ class WebSearcher:
                     description=description,
                     year=year,
                     citations=cited_by,
-                    metadata={
-                        "publication_info": publication_info,
-                        "pdf_url": pdf_url,
-                        "snippet": snippet,
-                        "rank": idx
-                    },
+                    metadata={"publication_info": publication_info, "pdf_url": pdf_url, "snippet": snippet, "rank": idx},
                     pdf_url=pdf_url or None,
                     scholar_publication_info=publication_info or None,
                     scholar_rank=idx,
@@ -313,11 +317,72 @@ class WebSearcher:
                             continue
                     except Exception:
                         pass
-                sources.append(source)
-
+                sources.append(s)
         except Exception as e:
             logger.error(f"Error parsing Google Scholar results: {e}")
+        return sources
 
+    def _google_scholar_search_debug_api(self, query: str, before: str = None) -> List[Source]:
+        conn = http.client.HTTPSConnection("google.serper.dev")
+        payload = json.dumps({
+            "q": query,
+            "as_ylo": 2023,
+            "num": self.max_results
+        })
+        headers = {
+            'X-API-KEY': self.api_key,
+            'Content-Type': 'application/json'
+        }
+        for i in range(5):
+            try:
+                conn.request("POST", "/scholar", payload, headers)
+                res = conn.getresponse()
+                break
+            except Exception as e:
+                logger.warning(f"Attempt {i+1}/5 failed: {e}")
+                if i == 4:
+                    logger.error("Google Scholar search timeout after 5 attempts")
+                    return []
+                continue
+        data = res.read()
+        results = json.loads(data.decode("utf-8"))
+        sources: List[Source] = []
+        try:
+            if "organic" not in results:
+                return []
+            for idx, page in enumerate(results["organic"], 1):
+                title = page.get("title", "Untitled")
+                link = page.get("link", "")
+                snippet = page.get("snippet", "")
+                year = page.get("year")
+                cited_by = page.get("citedBy")
+                publication_info = page.get("publicationInfo", "")
+                pdf_url = page.get("pdfUrl", "")
+                description = " | ".join([p for p in [snippet, publication_info] if p])
+                s = Source(
+                    title=title,
+                    url=link or "No link available",
+                    source_type=SourceType.SCHOLAR,
+                    platform=Platform.GOOGLE_SCHOLAR,
+                    description=description,
+                    year=year,
+                    citations=cited_by,
+                    metadata={"publication_info": publication_info, "pdf_url": pdf_url, "snippet": snippet, "rank": idx},
+                    pdf_url=pdf_url or None,
+                    scholar_publication_info=publication_info or None,
+                    scholar_rank=idx,
+                    scholar_cited_by=cited_by
+                )
+                if before and year:
+                    try:
+                        by = int(str(before)[:4])
+                        if int(year) > by:
+                            continue
+                    except Exception:
+                        pass
+                sources.append(s)
+        except Exception as e:
+            logger.error(f"Error parsing Google Scholar results: {e}")
         return sources
 
     def _deduplicate(self, sources: List[Source]) -> List[Source]:
@@ -362,4 +427,3 @@ class WebSearcher:
                 unique_sources.append(source)
 
         return unique_sources
-

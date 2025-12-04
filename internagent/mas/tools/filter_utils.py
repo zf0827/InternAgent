@@ -52,7 +52,7 @@ def _load_lm_from_env():
     ds_api_key = os.getenv("DS_API_KEY")
     if ds_api_key:
         return dspy.LM(
-            model="openai/deepseek-v3",
+            model="openai/DeepSeek-V3.2",
             api_key=ds_api_key,
             api_base=os.getenv("DS_API_BASE_URL")
         )

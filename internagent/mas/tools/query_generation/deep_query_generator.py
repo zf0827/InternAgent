@@ -43,7 +43,7 @@ class DeepQueryGenerator(dspy.Module):
             config = self._load_config_from_env()
 
         # Configure dspy LM instance (will be used in context manager)
-        self.lm = dspy.LM(model=config.get("model", "deepseek-v3"), api_key=config["api_key"], api_base=config.get("api_base"))
+        self.lm = dspy.LM(model=config.get("model", "DeepSeek-V3.2"), api_key=config["api_key"], api_base=config.get("api_base"))
         
         # Add system prompt to enforce strict adherence to idea relevance
         system_prompt = """You are a research query generator that follow these requirements:
@@ -68,7 +68,7 @@ Remember: The goal is to generate queries that help explore the idea more deeply
             return {
                 "api_key": ds_api_key,
                 "api_base": os.getenv("DS_API_BASE_URL"),
-                "model": "openai/deepseek-v3"
+                "model": "openai/DeepSeek-V3.2"
             }
         
         openai_api_key = os.getenv("OPENAI_API_KEY")

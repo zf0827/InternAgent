@@ -22,6 +22,7 @@ from .ranking_agent import RankingAgent
 from .method_development_agent import MethodDevelopmentAgent
 from .refinement_agent import RefinementAgent
 from .research_agent import ResearchAgent
+from .research_agentv2 import ResearchAgentV2
 from .report_agent import ReportAgent
 from .extraction_agent import ExtractionAgent
 from .grounding_agent import GroundingAgent
@@ -49,6 +50,7 @@ class AgentFactory:
         "survey": SurveyAgent,
         "scholar": ScholarAgent,
         "research": ResearchAgent,
+        "researchv2": ResearchAgentV2,
         "report": ReportAgent,
         "extraction": ExtractionAgent,
         "grounding": GroundingAgent,
