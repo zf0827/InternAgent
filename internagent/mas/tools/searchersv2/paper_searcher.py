@@ -40,15 +40,22 @@ def parse_arxiv_xml(xml_data: str) -> list:
                 if name_elem:
                     authors.append(name_elem.text.strip())
             
-            # Publication year
+            # Publication year and date
+            # Extract date from published time (ISO format with T separator, e.g., 2024-01-15T10:30:00Z)
             published_elem = entry.find("published")
             year = None
+            date = None
             if published_elem:
                 try:
                     pub_date = published_elem.text.strip()
+                    # Extract year
                     match = re.search(r"(\d{4})", pub_date)
                     if match:
                         year = int(match.group(1))
+                    # Extract date in yyyy-mm-dd format
+                    date_match = re.search(r"(\d{4}-\d{2}-\d{2})", pub_date)
+                    if date_match:
+                        date = date_match.group(1)
                 except ValueError:
                     pass
             
@@ -86,6 +93,7 @@ def parse_arxiv_xml(xml_data: str) -> list:
                 "doi": doi,
                 "url": url,
                 "arxiv_id": arxiv_id,
+                "date": date,
             }
             papers.append(paper)
             
@@ -305,7 +313,7 @@ class PaperSearcher:
         self.batch_size = batch_size
         logger.info(f"Initialized PaperSearcher with max_results={self.max_results}, enable_filtering={self.enable_filtering}")
     
-    def search(self, queries: List[str], basic_idea: str = "", before: Optional[str] = None, after: Optional[str] = None) -> List[Source]:
+    def search(self, queries: List[str], basic_idea: str = "", before: Optional[str] = None, after: Optional[str] = None) -> List[tuple]:
         """
         Search for papers using multiple queries with optional filtering.
         
@@ -316,18 +324,18 @@ class PaperSearcher:
             after: Optional date filter (YYYY-MM-DD format)
             
         Returns:
-            List of Source objects
+            List of tuples (Source, query_index) where query_index is the index of the query that found this source
         """
-        all_sources = []
+        all_sources_with_idx = []
         
-        # Collect raw results
+        # Collect raw results with query indices
         raw_sources = []
-        for q in queries:
-            logger.info(f"Searching ArXiv for query: {q}")
+        for q_idx, q in enumerate(queries):
+            logger.info(f"Searching ArXiv for query {q_idx}: {q}")
             try:
                 papers = fetch_arxiv_papers_debug_api(q, before=before, after=after, max_results=self.max_results) or []
                 for p in papers:
-                    raw_sources.append({"q": q, "p": p})
+                    raw_sources.append({"q": q, "q_idx": q_idx, "p": p})
             except Exception as e:
                 logger.error(f"Error searching ArXiv for query '{q}': {e}")
         
@@ -353,20 +361,28 @@ class PaperSearcher:
             raw_sources = final
             logger.info(f"Filtered to {len(raw_sources)} related papers")
         
-        # Convert to Source objects
+        # Convert to Source objects and store query index
         for item in raw_sources:
             p = item.get("p", {})
+            q_idx = item.get("q_idx", 0)
             try:
                 source = self._convert_to_source(p)
                 if source:
-                    all_sources.append(source)
+                    all_sources_with_idx.append((source, q_idx))
             except Exception as e:
                 logger.error(f"Error converting paper to Source: {e}")
         
-        # Deduplicate by title
-        unique_sources = self._deduplicate(all_sources)
-        logger.info(f"Found {len(unique_sources)} unique papers")
-        return unique_sources
+        # Deduplicate by title (keep first occurrence)
+        seen_titles = set()
+        unique_sources_with_idx = []
+        for source, q_idx in all_sources_with_idx:
+            normalized_title = ''.join(source.title.lower().split())
+            if normalized_title not in seen_titles:
+                seen_titles.add(normalized_title)
+                unique_sources_with_idx.append((source, q_idx))
+        
+        logger.info(f"Found {len(unique_sources_with_idx)} unique papers")
+        return unique_sources_with_idx
     
     def _convert_to_source(self, paper: dict) -> Optional[Source]:
         """Convert a paper dictionary to a Source object."""
@@ -376,6 +392,7 @@ class PaperSearcher:
             abstract = paper.get("abstract", "")
             authors = paper.get("authors", [])
             year = paper.get("year")
+            date = paper.get("date")  # yyyy-mm-dd format
             doi = paper.get("doi")
             arxiv_id = paper.get("arxiv_id")
             
@@ -383,6 +400,9 @@ class PaperSearcher:
             pdf_url = None
             if arxiv_id:
                 pdf_url = f"http://arxiv.org/pdf/{arxiv_id}.pdf"
+            
+            # Use date for timestamp if available, otherwise fall back to year
+            timestamp = date if date else (str(year) if year else None)
             
             return Source(
                 title=title,
@@ -396,7 +416,7 @@ class PaperSearcher:
                 doi=doi,
                 pdf_url=pdf_url,
                 arxiv_id=arxiv_id,
-                timestamp=str(year) if year else None
+                timestamp=timestamp
             )
         except Exception as e:
             logger.error(f"Error converting paper to Source: {e}")

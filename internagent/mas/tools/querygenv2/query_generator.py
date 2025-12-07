@@ -10,7 +10,7 @@ import json
 import logging
 from typing import List, Optional, Dict, Any
 
-from ..searchersv2.models import Idea, SearchQuery
+from ..searchersv2.models import Idea, SearchQuery, Source
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ class OptimizedCoreSignature(dspy.Signature):
     1. ONE core essence — the central concept of this work
     2. ONE main motivation — the key problem/gap being addressed
     3. Core technologies — the decisive technical components (multiple allowed, no more than 5 techs)
+    4. Baselines — the baseline methods or models that are referenced in the experimental setting part
 
     ====================== KEYWORD QUALITY REQUIREMENTS ======================
     1. **Conciseness**: Each keyword MUST be <= 3 words.
@@ -72,15 +73,17 @@ class OptimizedCoreSignature(dspy.Signature):
     core_essence: "program repair"
     main_motivation: "software bug"
     tech: ["large language model", "code generation"]
+    baselines: ["directly prompt",...](need to be extracted from the real experimental setting part)
 
     For an idea about "efficient inference of diffusion models via distillation":
     
     core_essence: "diffusion acceleration"
     main_motivation: "inference efficiency"
     tech: ["knowledge distillation", "model compression"]
+    baselines: ["Easy-Diffusion", "Diffusers", ...](need to be extracted from the real experimental setting part)
 
     ====================== NOW PROCESS THE INPUT ======================
-    Analyze the given idea deeply, identify the ONE core essence, ONE main motivation, and key technologies.
+    Analyze the given idea deeply, identify the ONE core essence, ONE main motivation, key technologies, and baselines.
     """
 
     basic_idea = dspy.InputField(
@@ -92,6 +95,9 @@ class OptimizedCoreSignature(dspy.Signature):
     methodology = dspy.InputField(
         desc="Proposed methodology and technical approach - how the problem will be solved"
     )
+    experimental_setting = dspy.InputField(
+        desc="Major And Analysis Experiments - Including datasets, baselines, metrics, and hardware"
+    )
 
     core_essence = dspy.OutputField(
         desc="A single string (<= 3 words) representing the central concept."
@@ -101,6 +107,9 @@ class OptimizedCoreSignature(dspy.Signature):
     )
     tech = dspy.OutputField(
         desc='JSON-style list of keyword strings (each <= 3 words) representing core technical components. Format: ["tech1", "tech2", ...]'
+    )
+    baselines = dspy.OutputField(
+        desc='JSON-style list of keyword strings (each <= 3 words) representing baseline methods or models. Format: ["baseline1", "baseline2", ...]'
     )
 
 
@@ -147,24 +156,27 @@ class OptimizedCoreGenerator(dspy.Module):
         
         raise ValueError("No API keys found. Please set DS_API_KEY or OPENAI_API_KEY in environment variables.")
 
-    def forward(self, basic_idea: str, motivation: str, methodology: str) -> Dict[str, Any]:
+    def forward(self, basic_idea: str, motivation: str, methodology: str, experimental_setting: str) -> Dict[str, Any]:
         """
         Generate core essence, motivation and techs from idea text.
         """
-        logger.info("Generating core essence, motivation and techs for idea...")
+        logger.info("Generating core essence, motivation, techs, and baselines for idea...")
         
         logger.info(f"Components - Basic idea: {len(basic_idea)} chars, "
                    f"Motivation: {len(motivation)} chars, "
-                   f"Methodology: {len(methodology)} chars")
+                   f"Methodology: {len(methodology)} chars, "
+                   f"Experimental setting: {len(experimental_setting)} chars")
         
         with dspy.settings.context(lm=self.lm):
             result = self.generate_core(
                 basic_idea=basic_idea,
                 motivation=motivation,
-                methodology=methodology
+                methodology=methodology,
+                experimental_setting=experimental_setting,
             )
         
         techs = []
+        baselines = []
         if result.tech:
              # Try to parse the list string
             try:
@@ -177,11 +189,23 @@ class OptimizedCoreGenerator(dspy.Module):
             except Exception as e:
                 logger.error(f"Failed to parse tech list: {e}")
                 techs = [result.tech]
-
+        if result.baselines:
+            try:
+                baseline_str = result.baselines.strip()
+                if baseline_str.startswith('[') and baseline_str.endswith(']'):
+                    baselines = json.loads(baseline_str)
+                else:
+                    # Fallback splitting if not valid JSON
+                    baselines = [t.strip().strip('"').strip("'") for t in baseline_str.split(',')]
+            except Exception as e:
+                logger.error(f"Failed to parse baseline list: {e}")
+                baselines = [result.baselines]
+                
         return {
             "core_essence": result.core_essence.strip('"'),
             "main_motivation": result.main_motivation.strip('"'),
-            "tech": techs
+            "tech": techs,
+            "baselines": baselines,
         }
 
 
@@ -617,6 +641,187 @@ class OptimizedWebQueryGenerator(dspy.Module):
         return _parse_pipe_bracket_list(getattr(result, "new_web_queries", ""))
 
 
+class RefineQuerySignature(dspy.Signature):
+    """
+    You are an expert academic search strategist helping to refine and extend an existing ArXiv title search.
+
+    GOAL:
+    Given (1) the original research idea, (2) the top-ranked papers found so far (including the queries that
+    retrieved them), and (3) the full set of original queries, you will reflect on what has worked well and
+    what has not, then propose improved follow-up title queries that complement the current results.
+
+    INPUTS:
+    - basic_idea: The original research idea.
+    - top_papers_info: JSON string with top papers, including for each paper its title, similarity_score,
+      and the specific query that retrieved it:
+        [{"title": "...", "similarity_score": 0.95, "query": "..."}, ...]
+    - original_queries: JSON array of all queries used in the first search round, including both effective
+      and ineffective ones.
+
+    INTERPRETATION OF QUERIES:
+    - Treat the queries that successfully retrieved the papers in top_papers_info as “good” queries:
+      they are reasonably well-aligned with the basic_idea and the actual literature.
+    - Treat the remaining queries in original_queries (that did not retrieve top papers) as “weak” or
+      “less useful” queries, because they are likely:
+        - too specific (overly detailed constraints that hurt recall),
+        - too broad (introducing a lot of noise), or
+        - partially off-topic relative to the basic_idea.
+
+    ANALYSIS PROCESS:
+    1. Analyze good queries and top paper titles:
+       - Extract recurring, high-signal keywords/phrases and phrasings that characterize the core topic,
+         tasks, methods, or domains.
+       - Notice terminology and synonyms that appear to be widely used and well-matched to the idea.
+
+    2. Analyze weak queries:
+       - Identify over-specific fragments (very detailed or niche conditions) that likely prevent finding
+         additional relevant papers; consider how they could be generalized or removed.
+       - Identify low-relevance or noisy keywords and avoid reusing them in new queries.
+
+    3. Reflect on coverage and gaps:
+       - Determine which aspects of the basic_idea are already well-covered by the current top papers
+         (e.g., particular methods, datasets, problem settings).
+       - Identify missing or under-explored perspectives, such as:
+         alternative methods, related tasks, adjacent application domains, different terminology,
+         or broader/narrower variants of the problem.
+
+    4. Design refined queries:
+       - Reuse and recombine high-signal keywords from good queries and from top paper titles.
+       - Generalize over-specific fragments from weak queries (e.g., shorten overly detailed phrases,
+         drop unnecessary constraints, or replace them with slightly broader terms).
+       - Avoid low-relevance or noisy keywords observed in weak queries.
+       - Introduce alternative but clearly related terminology that might surface complementary or
+         previously missed papers, while remaining focused on the basic_idea.
+       - Aim for queries that extend the current search (new angles, related subproblems,
+         complementary approaches) without drifting off-topic.
+
+    OUTPUT REQUIREMENTS:
+    - Generate 6–10 new ArXiv title queries.
+    - Each query must use only ti:"..." clauses combined with uppercase AND / OR.
+    - Each query must contain 1–3 ti:"..." clauses.
+    - Do NOT duplicate any of the original_queries verbatim; new queries should be refinements,
+      recombinations, or generalizations.
+    - Focus on discovering papers that complement or extend the current top results, improving recall
+      while maintaining good precision.
+
+    ======================
+    STRICT OUTPUT FORMAT (UNCHANGED)
+    ======================
+    Output ONLY:
+
+    [QUERY_1|QUERY_2|...|QUERY_N]
+
+    - 6 ≤ N ≤ 10
+    - Each QUERY contains 1 to 3 ti:"..." clauses
+    - Only ti:"..." clauses + uppercase AND / OR are allowed
+    - No parentheses, no NOT, no other fields, no extra text
+    """
+
+    basic_idea = dspy.InputField(
+        desc="The original research idea that the search should stay focused on."
+    )
+    top_papers_info = dspy.InputField(
+        desc='JSON string with top papers: [{"title": "...", "similarity_score": 0.95, "query": "..."}, ...]'
+    )
+    original_queries = dspy.InputField(
+        desc="JSON array of all original title queries used in the first search round."
+    )
+    refined_queries = dspy.OutputField(
+        desc=(
+            'Refined ArXiv title search queries derived from the basic idea and from analysis of which '
+            'initial queries and retrieved papers worked well or poorly. The output MUST be a single '
+            'bracketed, pipe-separated list like [ti:"..." AND ti:"..."|ti:"..." OR ti:"..."|...]. '
+            'Each internal query uses 1–3 ti:"..." clauses combined only with AND and/or OR, and should '
+            'extend or complement the current set of top-ranked papers while avoiding ineffective patterns '
+            'from the original queries.'
+        )
+    )
+
+
+class RefineGenerator(dspy.Module):
+    """
+    Generates refined queries based on top-ranked search results.
+    """
+    
+    def __init__(self, config: Optional[dict] = None):
+        super().__init__()
+        if config is None:
+            config = _load_llm_config_from_env()
+        
+        try:
+            self.lm = dspy.LM(
+                model=config.get("model", "gpt-4o-mini"),
+                api_key=config["api_key"],
+                api_base=config.get("api_base"),
+                temperature=1.0
+            )
+            logger.info(f"Initialized RefineGenerator with model: {config.get('model', 'gpt-4o-mini')}")
+        except Exception as e:
+            logger.error(f"Failed to initialize dspy with provided config: {e}")
+            raise
+        
+        self.generate_refined_queries = dspy.ChainOfThought(RefineQuerySignature)
+    
+    def forward(
+        self,
+        basic_idea: str,
+        top_sources: List[Source],
+        similarity_scores: List[float],
+        source_queries: List[str],
+        original_queries: List[str]
+    ) -> List[str]:
+        """
+        Generate refined queries based on top-ranked sources.
+        
+        Args:
+            basic_idea: The original research idea
+            top_sources: List of top-ranked Source objects
+            similarity_scores: List of similarity scores corresponding to top_sources
+            source_queries: List of queries that found each source (by query index)
+            original_queries: List of original queries used in first search
+        
+        Returns:
+            List of refined query strings
+        """
+        logger.info(f"Generating refined queries based on {len(top_sources)} top sources...")
+        
+        # Build top_papers_info JSON
+        papers_info = []
+        for i, source in enumerate(top_sources):
+            papers_info.append({
+                "title": source.title,
+                "similarity_score": similarity_scores[i] if i < len(similarity_scores) else 0.0,
+                "query": source_queries[i] if i < len(source_queries) else ""
+            })
+        
+        top_papers_info_str = json.dumps(papers_info, ensure_ascii=False)
+        original_queries_str = json.dumps(original_queries, ensure_ascii=False)
+        
+        with dspy.settings.context(lm=self.lm):
+            result = self.generate_refined_queries(
+                basic_idea=basic_idea,
+                top_papers_info=top_papers_info_str,
+                original_queries=original_queries_str
+            )
+        
+        # Parse refined queries
+        refined_queries = self._parse_query_list(result.refined_queries)
+        refined_queries_abs = [q.replace("ti:", "abs:") for q in refined_queries]
+        refined_queries_abs = [f'(({q}) NOT (ti:"survey" OR ti:"benchmark" OR ti:"overview"))' for q in refined_queries_abs]
+        logger.info(f"Generated {len(refined_queries)} refined queries")
+        return refined_queries_abs
+    
+    def _parse_query_list(self, query_string: str) -> List[str]:
+        """Parse query list from string format."""
+        if not query_string:
+            return []
+        query_string = query_string.strip()
+        if query_string.startswith('[') and query_string.endswith(']'):
+            query_string = query_string[1:-1].strip()
+        queries = [q.strip() for q in query_string.split("|")]
+        return queries
+
+
 class QueryGenerator:
     """
     Main query generator that generates queries for different platforms.
@@ -647,6 +852,7 @@ class QueryGenerator:
         basic_idea = (idea.basic_idea or "").strip()
         motivation = (idea.motivation or "").strip()
         methodology = (idea.method or "").strip()
+        experimental_setting = (idea.experimental_setting or "").strip()
         
         paper_queries: List[str] = []
         web_queries: List[str] = []
@@ -658,10 +864,12 @@ class QueryGenerator:
                 basic_idea=basic_idea,
                 motivation=motivation,
                 methodology=methodology,
+                experimental_setting=experimental_setting,
             )
             
             # Step 2: Generate synonyms for core essence
             core_essence = core_info.get("core_essence")
+            logger.info(f"core_info: {core_info}")
             if core_essence:
                 synonyms = self.synonym_generator(
                     core_essence=core_essence,
@@ -678,6 +886,15 @@ class QueryGenerator:
                     ]
             else:
                 logger.warning("No core_essence generated, skipping paper query generation")
+                
+            # Step 4: Generate baselines from experimental setting
+            baselines = core_info.get("baselines")
+            if baselines:
+                for baseline in baselines:
+                    paper_queries.append(f'(abs:"{baseline}" NOT (ti:"survey" OR ti:"benchmark" OR ti:"overview"))')
+            else:
+                logger.warning("No baselines generated, skipping paper query generation")
+
         except Exception as e:
             logger.warning(f"Paper query generator (synonyms) failed: {e}")
         

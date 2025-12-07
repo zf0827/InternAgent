@@ -11,11 +11,11 @@ import json
 import dspy
 import shutil
 import tempfile
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 from .base_agent import BaseAgent, AgentExecutionError
 from ..tools.searchersv2.models import Idea, SearchQuery, SearchResults, Source, SourceType, Platform
-from ..tools.querygenv2.query_generator import QueryGenerator
+from ..tools.querygenv2.query_generator import QueryGenerator, RefineGenerator
 from ..tools.querygenv2.reranker import rerank_articles_two_stage
 from ..tools.searchersv2.paper_searcher import PaperSearcher
 from ..tools.searchersv2.web_searcher import WebSearcher
@@ -55,6 +55,7 @@ class ResearchAgentV2(BaseAgent):
         self.topk_web_pages = config.get("topk_web_pages", 10)
         # Initialize query generator
         self.query_generator = QueryGenerator()
+        self.refine_generator = RefineGenerator()
         
         # Initialize searchers
         self.paper_searcher = PaperSearcher(
@@ -193,25 +194,39 @@ class ResearchAgentV2(BaseAgent):
         # Extract basic idea for filtering
         basic_idea = idea.basic_idea.strip()
         
-        queries = SearchQuery(paper_queries=None, web_queries=None) ### tiaoshi
-        
-        # Search papers
+        # Search papers with two-round search logic
+        # First search: with before and after filters
+        # Second search: with before=after, after=None (to get future papers)
         papers: List[Source] = []
         if queries.paper_queries:
-            logger.info("Searching arXiv...")
-            papers = self.paper_searcher.search(
-                queries=queries.paper_queries,
+            # First search: with before and after
+            papers_first = self._search_papers_two_round(
+                paper_queries=queries.paper_queries,
                 basic_idea=basic_idea,
                 before=before,
-                after=after,
+                after=after
             )
-            logger.info(f"Found {len(papers)} papers")
             
-            # Rerank papers using two-stage reranking
-            if papers and basic_idea and self.topk_papers > 0:
-                logger.info(f"Reranking {len(papers)} papers to select top {self.topk_papers}")
-                papers = self._rerank_papers(papers, basic_idea)
-                logger.info(f"Selected top {len(papers)} papers after reranking")
+            # Second search: with after=before, after=None (to get future papers)
+            papers_second: List[Source] = []
+            if before and after:
+                papers_second = self._search_papers_two_round(
+                    paper_queries=queries.paper_queries,
+                    basic_idea=basic_idea,
+                    before=before,
+                    after=after
+                )
+            
+            # Merge results (deduplicate by normalized title)
+            seen_titles = set()
+            papers = []
+            for paper in papers_first + papers_second:
+                normalized_title = ''.join(paper.title.lower().split())
+                if normalized_title not in seen_titles:
+                    seen_titles.add(normalized_title)
+                    papers.append(paper)
+            
+            logger.info(f"Merged papers: {len(papers_first)} + {len(papers_second)} (future) = {len(papers)} (unique)")
 
         # Search web
         web_pages: List[Source] = []
@@ -256,6 +271,217 @@ class ResearchAgentV2(BaseAgent):
         logger.info("=" * 80)
         
         return results
+    
+    def _search_papers_two_round(
+        self,
+        paper_queries: List[str],
+        basic_idea: str,
+        before: Optional[str] = None,
+        after: Optional[str] = None
+    ) -> List[Source]:
+        """
+        Perform two-round paper search with refinement.
+        
+        Round 1: Search -> Rerank -> TopK
+        Refine: Generate refined queries based on top results
+        Round 2: Search -> Merge -> Rerank -> Final TopK
+        
+        Args:
+            paper_queries: List of initial paper queries
+            basic_idea: Basic idea text for reranking
+            before: Optional date filter
+            after: Optional date filter
+            
+        Returns:
+            List of top-k Source objects after two-round search
+        """
+        # TODO: WAY1: on first filter, save 5 future papers; on second filter, save 5 future papers;
+        # TODO: WAY2: use 2 _search_papers_two_round w & w/o after
+
+        logger.info("=" * 80)
+        logger.info("Round 1: Initial paper search")
+        logger.info("=" * 80)
+        
+        # Round 1: Search papers
+        first_round_results: List[Tuple[Source, int]] = self.paper_searcher.search(
+            queries=paper_queries,
+            basic_idea=basic_idea,
+            before=before,
+            after=after,
+        )
+        
+        logger.info(f"Found {len(first_round_results)} papers in first round")
+        
+        if not first_round_results:
+            logger.warning("No papers found in first round")
+            return []
+        
+        # Extract sources and create source-to-query mapping
+        first_round_sources = [source for source, _ in first_round_results]
+        source_to_query = {}
+        for source, q_idx in first_round_results:
+            normalized_title = ''.join(source.title.lower().split())
+            if normalized_title not in source_to_query:
+                source_to_query[normalized_title] = paper_queries[q_idx]
+        
+        # Round 1: Rerank and select topk
+        topk_first_round, topk_similarity_scores, topk_source_queries = self._rerank_and_extract_topk(
+            sources=first_round_sources,
+            basic_idea=basic_idea,
+            topk=self.topk_papers,
+            source_to_query=source_to_query
+        )
+        
+        logger.info(f"Selected top {len(topk_first_round)} papers after first round reranking")
+        
+        # Refine: Generate refined queries
+        logger.info("=" * 80)
+        logger.info("Refining queries based on top results")
+        logger.info("=" * 80)
+        
+        try:
+            refined_queries = self.refine_generator(
+                basic_idea=basic_idea,
+                top_sources=topk_first_round,
+                similarity_scores=topk_similarity_scores,
+                source_queries=topk_source_queries,
+                original_queries=paper_queries
+            )
+            logger.info(f"Generated {len(refined_queries)} refined queries")
+        except Exception as e:
+            logger.error(f"Failed to generate refined queries: {e}", exc_info=True)
+            refined_queries = []
+        
+        # Round 2: Search with refined queries (if any)
+        if not refined_queries:
+            logger.info("No refined queries generated, using first round results only")
+            return topk_first_round
+        
+        logger.info("=" * 80)
+        logger.info("Round 2: Search with refined queries")
+        logger.info("=" * 80)
+        
+        second_round_results: List[Tuple[Source, int]] = self.paper_searcher.search(
+            queries=refined_queries,
+            basic_idea=basic_idea,
+            before=before,
+            after=after,
+        )
+        
+        logger.info(f"Found {len(second_round_results)} papers in second round")
+        
+        # Merge results from both rounds (deduplicate)
+        second_round_sources = [source for source, _ in second_round_results]
+        all_sources = topk_first_round + second_round_sources
+        
+        seen_titles = set()
+        unique_all_sources = []
+        for source in all_sources:
+            normalized_title = ''.join(source.title.lower().split())
+            if normalized_title not in seen_titles:
+                seen_titles.add(normalized_title)
+                unique_all_sources.append(source)
+        
+        logger.info(f"Combined {len(unique_all_sources)} unique papers (from {len(topk_first_round)} + {len(second_round_sources)})")
+        
+        # Final rerank
+        logger.info("=" * 80)
+        logger.info("Final reranking")
+        logger.info("=" * 80)
+        
+        final_papers, _, _ = self._rerank_and_extract_topk(
+            sources=unique_all_sources,
+            basic_idea=basic_idea,
+            topk=self.topk_papers,
+            source_to_query={}  # Not needed for final rerank
+        )
+        
+        logger.info(f"Selected top {len(final_papers)} papers after final reranking")
+        
+        return final_papers
+    
+    def _rerank_and_extract_topk(
+        self,
+        sources: List[Source],
+        basic_idea: str,
+        topk: int,
+        source_to_query: Dict[str, str]
+    ) -> Tuple[List[Source], List[float], List[str]]:
+        """
+        Rerank sources and extract top-k with similarity scores and source queries.
+        
+        Args:
+            sources: List of Source objects to rerank
+            basic_idea: Basic idea text for reranking
+            topk: Number of top results to return
+            source_to_query: Mapping from normalized title to query string
+            
+        Returns:
+            Tuple of (top_sources, similarity_scores, source_queries)
+        """
+        if not sources:
+            return [], [], []
+        
+        # Collect abstracts and create mapping
+        article_list = []
+        abstract_to_source = {}
+        
+        for source in sources:
+            abstract = source.description or ""
+            if abstract:
+                article_list.append(abstract)
+                abstract_to_source[abstract] = source
+        
+        if not article_list:
+            logger.warning("No sources with abstracts found for reranking")
+            return sources[:topk], [0.0] * min(topk, len(sources)), [""] * min(topk, len(sources))
+        
+        # Perform two-stage reranking
+        core_article = basic_idea.strip()
+        rerank_top_k = max(topk, min(20, len(article_list)))
+        
+        try:
+            reranked_results = rerank_articles_two_stage(
+                core_article=core_article,
+                article_list=article_list,
+                top_k=rerank_top_k
+            )
+            
+            # Extract top-k with scores and queries
+            top_sources = []
+            similarity_scores = []
+            source_queries = []
+            
+            for article_abstract, embed_score, rerank_score in reranked_results[:topk]:
+                if article_abstract in abstract_to_source:
+                    source = abstract_to_source[article_abstract]
+                    # Store scores in metadata
+                    if not source.metadata:
+                        source.metadata = {}
+                    source.metadata["rerank_embed_score"] = embed_score
+                    source.metadata["rerank_score"] = rerank_score
+                    
+                    top_sources.append(source)
+                    similarity_scores.append(rerank_score)
+                    
+                    # Find corresponding query
+                    normalized_title = ''.join(source.title.lower().split())
+                    query = source_to_query.get(normalized_title, "")
+                    source_queries.append(query)
+            
+            return top_sources, similarity_scores, source_queries
+            
+        except Exception as e:
+            logger.error(f"Reranking failed: {e}", exc_info=True)
+            # Fallback: return first topk
+            fallback_sources = sources[:topk]
+            fallback_scores = [0.0] * len(fallback_sources)
+            fallback_queries = []
+            for source in fallback_sources:
+                normalized_title = ''.join(source.title.lower().split())
+                query = source_to_query.get(normalized_title, "")
+                fallback_queries.append(query)
+            return fallback_sources, fallback_scores, fallback_queries
     
     def _rerank_papers(self, papers: List[Source], basic_idea: str) -> List[Source]:
         """

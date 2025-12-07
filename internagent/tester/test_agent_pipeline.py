@@ -5,9 +5,10 @@ Agent Pipeline Test - 串联测试Agent工作流
 测试流程:
 1. ExtractionAgent: PDF -> idea (提取结构化信息，使用Idea.from_lists()创建Idea对象)
 2. ResearchAgentV2: idea -> SearchResults (深度搜索，返回三个平台的结果)
-3. ReportAgent: SearchResults -> reports (生成报告，返回三个报告列表)
+3. ReportAgent (Research Mode): SearchResults -> research reports (生成研究报告，返回三个报告列表)
 4. GroundingAgent: reports + claims -> grounding_results (证据验证，对六个部分分别处理)
-5. EvaluationAgent: SKIPPED (暂时跳过)
+5. EvaluationAgent: idea + reports + SearchResults -> evaluation (评估，返回三个维度的评分)
+6. ReportAgent (Review Mode): evaluation_results -> review reports (生成评审报告，基于评估结果)
 
 参考: quick_test_deepresearch.py 和 test_report_agent.py
 """
@@ -18,7 +19,7 @@ import json
 import os
 import asyncio
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -41,7 +42,7 @@ def load_pipeline_result(file_path: Path) -> Dict[str, Any]:
     Load existing pipeline_result.json if it exists, otherwise return empty dict.
     
     Returns:
-        Dict with keys: search_results_dict, reports_data, grounding_result
+        Dict with keys: search_results_dict, reports_data, grounding_result, evaluation_result, final_report
     """
     if file_path.exists():
         try:
@@ -54,19 +55,27 @@ def load_pipeline_result(file_path: Path) -> Dict[str, Any]:
                     data["reports_data"] = None
                 if "grounding_result" not in data:
                     data["grounding_result"] = {}
+                if "evaluation_result" not in data:
+                    data["evaluation_result"] = None
+                if "final_report" not in data:
+                    data["final_report"] = None
                 return data
         except Exception as e:
             logger.warning(f"Failed to load existing pipeline_result.json: {e}, creating new file")
             return {
                 "search_results_dict": None,
                 "reports_data": None,
-                "grounding_result": {}
+                "grounding_result": {},
+                "evaluation_result": None,
+                "final_report": None
             }
     else:
         return {
             "search_results_dict": None,
             "reports_data": None,
-            "grounding_result": {}
+            "grounding_result": {},
+            "evaluation_result": None,
+            "final_report": None
         }
 
 
@@ -76,7 +85,7 @@ def save_pipeline_result(file_path: Path, data: Dict[str, Any]):
     
     Args:
         file_path: Path to save the file
-        data: Dict with keys: search_results_dict, reports_data, grounding_result
+        data: Dict with keys: search_results_dict, reports_data, grounding_result, evaluation_result
     """
     file_path.parent.mkdir(parents=True, exist_ok=True)
     with open(file_path, 'w', encoding='utf-8') as f:
@@ -88,7 +97,9 @@ def update_pipeline_result(file_path: Path,
                            search_results_dict: Optional[Dict[str, Any]] = None,
                            reports_data: Optional[Dict[str, Any]] = None,
                            grounding_result_part: Optional[str] = None,
-                           grounding_result_claims: Optional[List[Dict[str, Any]]] = None):
+                           grounding_result_claims: Optional[List[Dict[str, Any]]] = None,
+                           evaluation_result: Optional[Dict[str, Any]] = None,
+                           final_report: Optional[str] = None):
     """
     Update pipeline_result.json with new data (append mode).
     
@@ -98,6 +109,8 @@ def update_pipeline_result(file_path: Path,
         reports_data: New reports_data to save
         grounding_result_part: Part name for grounding_result (e.g., "basic_idea")
         grounding_result_claims: List of claim dicts for the part
+        evaluation_result: New evaluation_result to save
+        final_report: Final report string to save
     """
     # Load existing data
     data = load_pipeline_result(file_path)
@@ -115,6 +128,14 @@ def update_pipeline_result(file_path: Path,
         if "grounding_result" not in data:
             data["grounding_result"] = {}
         data["grounding_result"][grounding_result_part] = grounding_result_claims
+    
+    # Update evaluation_result
+    if evaluation_result is not None:
+        data["evaluation_result"] = evaluation_result
+    
+    # Update final_report
+    if final_report is not None:
+        data["final_report"] = final_report
     
     # Save updated data
     save_pipeline_result(file_path, data)
@@ -198,6 +219,42 @@ def load_personas(personas_file_path: Path, num_personas: int = 3) -> List[Dict[
         logger.error(f"Error loading personas: {e}")
         return []
 
+
+def has_cache(cached_data: Dict[str, Any], cache_key: str, check_func: Optional[Callable[[Any], bool]] = None) -> bool:
+    """
+    检查缓存中是否存在指定key的有效数据。
+    
+    Args:
+        cached_data: 从pipeline_result.json加载的缓存数据
+        cache_key: 要检查的key（如 "search_results_dict", "reports_data"）
+        check_func: 可选的验证函数，用于进一步检查数据有效性
+        
+    Returns:
+        bool: 如果缓存存在且有效返回True，否则返回False
+    """
+    if cache_key not in cached_data:
+        return False
+    
+    value = cached_data[cache_key]
+    
+    # 检查是否为None或空
+    if value is None:
+        return False
+    
+    # 如果是字典，检查是否为空
+    if isinstance(value, dict) and len(value) == 0:
+        return False
+    
+    # 如果是列表，检查是否为空
+    if isinstance(value, list) and len(value) == 0:
+        return False
+    
+    # 如果提供了验证函数，使用它进一步检查
+    if check_func is not None:
+        return check_func(value)
+    
+    return True
+
 # python3 -m internagent.tester.test_agent_pipeline
 async def main():
     print("\n" + "=" * 80)
@@ -218,7 +275,7 @@ async def main():
         "models": {
             "default_provider": "dsr1",
             "dsr1": {
-                "model_name": "deepseek-v3",
+                "model_name": "DeepSeek-V3.2",
                 "api_key": os.getenv("DS_API_KEY", ""),
                 "base_url": os.getenv("DS_API_BASE_URL", ""),
                 "max_tokens": 4096,
@@ -248,12 +305,11 @@ async def main():
         "_global_config": default_model_config
     }
     
-    # ReportAgent配置
+    # ReportAgent配置（支持research reports和review reports两种模式）
     report_config = {
         "name": "ReportAgent",
         "model_provider": "dsr1",
         "temperature": 0.7,
-        "system_prompt": "You are a helpful assistant that generates comprehensive reports.",
         "extraction_config": {
             "name": "ExtractionAgent",
             "model_provider": "dsr1",
@@ -273,10 +329,24 @@ async def main():
         "_global_config": default_model_config
     }
     
+    # EvaluationAgent配置
+    evaluation_config = {
+        "name": "EvaluationAgent",
+        "description": "Evaluates research ideas from multiple aspects",
+        "model_provider": "dsr1",
+        "temperature": 0.7,
+        "_global_config": default_model_config,
+        "max_retries": 10,
+    }
+    
     
     # 4. 初始化pipeline_result.json文件路径
-    pipeline_result_path = Path("/home/weiyunxiang/yunx/IdeaEvaluation/InternAgent/cache/pipeline_result.json")
+    pipeline_result_path = Path(project_root / "cache" / "pipeline_result_v3.json")
     pipeline_result_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # 4.5. 加载缓存数据（用于加速跳过已完成的阶段）
+    cached_data = load_pipeline_result(pipeline_result_path)
+    logger.info("Loaded pipeline cache for acceleration check")
     
     # 5. 创建Agent实例
     logger.info("Creating agent instances...")
@@ -292,6 +362,9 @@ async def main():
         
         grounding_agent = agent_factory.create_agent("grounding", grounding_config, model_factory)
         logger.info("GroundingAgent created successfully")
+        
+        evaluation_agent = agent_factory.create_agent("evaluation", evaluation_config, model_factory)
+        logger.info("EvaluationAgent created successfully")
     except Exception as e:
         logger.error(f"Failed to create agents: {e}")
         import traceback
@@ -359,100 +432,168 @@ async def main():
     print("STEP 2: ResearchAgentV2 - Idea -> SearchResults")
     print("=" * 80)
     
-    research_context = {
-        "idea": idea.to_dict()
-    }
-    research_params = {}
-    
-    try:
-        logger.info("Executing ResearchAgentV2...")
-        research_result = await research_agent.execute(research_context, research_params)
-        
-        search_results_dict = research_result.get("search_results", {})
+    # 检查缓存
+    if has_cache(cached_data, "search_results_dict"):
+        logger.info("✓ Found cached search_results_dict, skipping ResearchAgentV2 execution")
+        search_results_dict = cached_data["search_results_dict"]
         search_results = SearchResults.from_dict(search_results_dict)
-        
-        # 保存search_results到pipeline_result.json（第一部分）
-        update_pipeline_result(
-            pipeline_result_path,
-            search_results_dict=search_results_dict
-        )
-        logger.info(f"Saved search_results_dict to pipeline_result.json")
-        
-        # 打印ResearchAgentV2的中间结果
-        logger.info("=" * 80)
-        logger.info("ResearchAgentV2 Output Summary:")
-        logger.info("=" * 80)
+        print("✓ Using cached search results")
         logger.info(search_results.summary())
         print("\n" + search_results.summary())
         
-    except Exception as e:
-        logger.error(f"ResearchAgentV2 execution failed: {e}")
-        import traceback
-        traceback.print_exc()
-        raise
+        # 从缓存中获取 future_papers（如果存在）
+        if "future_papers" in cached_data:
+            logger.info(f"✓ Found cached future_papers: {len(cached_data['future_papers'])} papers")
+    else:
+        research_context = {
+            "idea": idea.to_dict()
+        }
+        research_params = {"before": "2025-10-01", "after": "2024-01-01"}
+        
+        try:
+            logger.info("Executing ResearchAgentV2...")
+            research_result = await research_agent.execute(research_context, research_params)
+            
+            search_results_dict = research_result.get("search_results", {})
+            search_results = SearchResults.from_dict(search_results_dict)
+            
+            # 分离 future_papers：根据 after 日期划分
+            after_date = research_params.get("after")
+            papers = search_results.papers
+            future_papers = []
+            regular_papers = []
+            
+            if after_date:
+                for paper in papers:
+                    # 检查 paper 的 timestamp（日期格式 yyyy-mm-dd）
+                    paper_date = paper.timestamp
+                    if paper_date and paper_date >= after_date:
+                        future_papers.append(paper.to_dict())
+                    else:
+                        regular_papers.append(paper)
+                logger.info(f"Separated papers: {len(regular_papers)} regular, {len(future_papers)} future (after {after_date})")
+            else:
+                regular_papers = papers
+                logger.info("No after date provided, all papers are regular papers")
+            
+            # 更新 search_results，只保留 regular_papers
+            search_results.papers = regular_papers
+            search_results_dict = search_results.to_dict()
+            
+            # 保存search_results到pipeline_result.json（第一部分）
+            update_pipeline_result(
+                pipeline_result_path,
+                search_results_dict=search_results_dict
+            )
+            logger.info(f"Saved search_results_dict to pipeline_result.json")
+            
+            # 更新缓存数据
+            cached_data["search_results_dict"] = search_results_dict
+            if future_papers:
+                cached_data["future_papers"] = future_papers
+            
+            # 打印ResearchAgentV2的中间结果
+            logger.info("=" * 80)
+            logger.info("ResearchAgentV2 Output Summary:")
+            logger.info("=" * 80)
+            logger.info(search_results.summary())
+            print("\n" + search_results.summary())
+            
+        except Exception as e:
+            logger.error(f"ResearchAgentV2 execution failed: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
     
-    # 9. 执行ReportAgent (SearchResults -> reports)
+    # 9. 执行ReportAgent (SearchResults -> research reports)
     print("\n" + "=" * 80)
-    print("STEP 3: ReportAgent - SearchResults -> Reports")
+    print("STEP 3: ReportAgent - SearchResults -> Research Reports")
     print("=" * 80)
     
-    report_context = {
-        "search_result": search_results_dict
-    }
-    report_params = {
-        "temperature": 0.7
-    }
-    
-    try:
-        logger.info("Executing ReportAgent...")
-        report_result = await report_agent.execute(report_context, report_params)
-        
-        # 获取三个报告列表
-        web_reports = report_result.get("web_reports", [])
-        code_reports = report_result.get("code_reports", [])
-        paper_reports = report_result.get("paper_reports", [])
-        
-        # 保存reports_data到pipeline_result.json（第二部分）
-        reports_data = {
-            "web_reports": web_reports,
-            "code_reports": code_reports,
-            "paper_reports": paper_reports
-        }
-        update_pipeline_result(
-            pipeline_result_path,
-            reports_data=reports_data
-        )
-        logger.info(f"Saved reports_data to pipeline_result.json")
-        
-        # 打印ReportAgent的中间结果
-        logger.info("=" * 80)
-        logger.info("ReportAgent Output:")
-        logger.info("=" * 80)
-        logger.info(f"Web Reports: {len(web_reports)} reports")
-        logger.info(f"Code Reports: {len(code_reports)} reports")
-        logger.info(f"Paper Reports: {len(paper_reports)} reports")
-        print(f"\nReport Counts:")
+    # 检查缓存
+    if has_cache(cached_data, "reports_data", lambda x: isinstance(x, dict) and 
+                 (x.get("web_reports") or x.get("code_reports") or x.get("paper_reports"))):
+        logger.info("✓ Found cached reports_data, skipping ReportAgent execution")
+        reports_data = cached_data["reports_data"]
+        web_reports = reports_data.get("web_reports", [])
+        code_reports = reports_data.get("code_reports", [])
+        paper_reports = reports_data.get("paper_reports", [])
+        print("✓ Using cached research reports")
+        print(f"\nResearch Report Counts:")
         print(f"  Web Reports: {len(web_reports)}")
         print(f"  Code Reports: {len(code_reports)}")
         print(f"  Paper Reports: {len(paper_reports)}")
+    else:
+        research_report_context = {
+            "search_result": search_results_dict
+        }
+        research_report_params = {
+            "temperature": 0.7
+        }
         
-        # 打印报告预览
-        if web_reports:
-            first_web_report = web_reports[0].get("content", {})
-            report_content = first_web_report.get("report_content", "")
-            logger.info(f"First Web Report Preview: {report_content[:500]}..." if len(report_content) > 500 else f"First Web Report Preview: {report_content}")
-        if code_reports:
-            first_code_report = code_reports[0].get("content", {})
-            report_content = first_code_report.get("report_content", "")
-            logger.info(f"First Code Report Preview: {report_content[:500]}..." if len(report_content) > 500 else f"First Code Report Preview: {report_content}")
-        if paper_reports:
-            logger.info(f"First Paper Report Title: {paper_reports[0].get('paper_metadata', {}).get('title', 'Unknown')}")
-        
-    except Exception as e:
-        logger.error(f"ReportAgent execution failed: {e}")
-        import traceback
-        traceback.print_exc()
-        raise
+        try:
+            logger.info("Executing ReportAgent for research reports...")
+            research_report_result = await report_agent.execute(research_report_context, research_report_params)
+            
+            # 获取三个报告列表（research reports模式）
+            web_reports = research_report_result.get("web_reports", [])
+            code_reports = research_report_result.get("code_reports", [])
+            paper_reports = research_report_result.get("paper_reports", [])
+            
+            # 保存reports_data到pipeline_result.json（第二部分）
+            reports_data = {
+                "web_reports": web_reports,
+                "code_reports": code_reports,
+                "paper_reports": paper_reports
+            }
+            update_pipeline_result(
+                pipeline_result_path,
+                reports_data=reports_data
+            )
+            logger.info(f"Saved research reports_data to pipeline_result.json")
+            
+            # 更新缓存数据
+            cached_data["reports_data"] = reports_data
+            
+            # 打印ReportAgent的中间结果
+            logger.info("=" * 80)
+            logger.info("ReportAgent Output (Research Reports):")
+            logger.info("=" * 80)
+            logger.info(f"Web Reports: {len(web_reports)} reports")
+            logger.info(f"Code Reports: {len(code_reports)} reports")
+            logger.info(f"Paper Reports: {len(paper_reports)} reports")
+            print(f"\nResearch Report Counts:")
+            print(f"  Web Reports: {len(web_reports)}")
+            print(f"  Code Reports: {len(code_reports)}")
+            print(f"  Paper Reports: {len(paper_reports)}")
+            
+            # 打印报告预览
+            if web_reports:
+                # 新格式：直接包含 report_content 字段
+                report_content = web_reports[0].get("report_content", "")
+                if not report_content:
+                    # 兼容旧格式：content 是字典
+                    content_dict = web_reports[0].get("content", {})
+                    if isinstance(content_dict, dict):
+                        report_content = content_dict.get("report_content", "")
+                logger.info(f"First Web Report Preview: {report_content[:500]}..." if len(report_content) > 500 else f"First Web Report Preview: {report_content}")
+            if code_reports:
+                # 新格式：直接包含 report_content 字段
+                report_content = code_reports[0].get("report_content", "")
+                if not report_content:
+                    # 兼容旧格式：content 是字典
+                    content_dict = code_reports[0].get("content", {})
+                    if isinstance(content_dict, dict):
+                        report_content = content_dict.get("report_content", "")
+                logger.info(f"First Code Report Preview: {report_content[:500]}..." if len(report_content) > 500 else f"First Code Report Preview: {report_content}")
+            if paper_reports:
+                logger.info(f"First Paper Report Title: {paper_reports[0].get('paper_metadata', {}).get('title', 'Unknown')}")
+            
+        except Exception as e:
+            logger.error(f"ReportAgent execution failed: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
     
     # 10. 循环执行GroundingAgent (对每个part)
     print("\n" + "=" * 80)
@@ -468,6 +609,10 @@ async def main():
         "ground_temperature": 0.0
     }
     
+    # 确保grounding_result在缓存中存在
+    if "grounding_result" not in cached_data:
+        cached_data["grounding_result"] = {}
+    
     for part in parts:
         # 从idea对象获取对应的*_list字段作为claims
         claims_list = getattr(idea, f"{part}_list", [])
@@ -477,48 +622,315 @@ async def main():
         
         logger.info(f"Processing part: {part} ({len(claims_list)} claims)")
         
-        grounding_context = {
-            "claims": {part: claims_list},
-            "reports": {
+        # 检查该part的缓存
+        if has_cache(cached_data["grounding_result"], part, lambda x: isinstance(x, list) and len(x) > 0):
+            logger.info(f"✓ Found cached grounding_result for part '{part}', skipping execution")
+            grounding_claims = cached_data["grounding_result"][part]
+            all_grounding_results[part] = grounding_claims
+            print(f"✓ Using cached grounding results for '{part}': {len(grounding_claims)} claims")
+        else:
+            grounding_context = {
+                "claims": {part: claims_list},
+                "reports": {
+                    "web_reports": web_reports,
+                    "code_reports": code_reports,
+                    "paper_reports": paper_reports
+                }
+            }
+            
+            try:
+                grounding_result = await grounding_agent.execute(grounding_context, grounding_params)
+                grounding_claims = grounding_result.get("grounding_results", [])
+                all_grounding_results[part] = grounding_claims
+                
+                # 保存grounding_result到pipeline_result.json（第三部分，按part保存）
+                update_pipeline_result(
+                    pipeline_result_path,
+                    grounding_result_part=part,
+                    grounding_result_claims=grounding_claims
+                )
+                logger.info(f"Saved grounding_result for part '{part}' to pipeline_result.json")
+                
+                # 更新缓存数据
+                cached_data["grounding_result"][part] = grounding_claims
+                
+                # 打印每个part的grounding结果
+                logger.info("=" * 80)
+                logger.info(f"GroundingAgent Output for part '{part}':")
+                logger.info("=" * 80)
+                logger.info(json.dumps(grounding_result, indent=2, ensure_ascii=False))
+                print(f"\nGrounding Results for '{part}': {len(grounding_claims)} claims processed")
+                
+            except Exception as e:
+                logger.error(f"GroundingAgent execution failed for part '{part}': {e}")
+                import traceback
+                traceback.print_exc()
+                # 继续处理其他parts
+                continue
+    
+    # 11. 执行EvaluationAgent (idea + reports + SearchResults -> evaluation)
+    print("\n" + "=" * 80)
+    print("STEP 5: EvaluationAgent - Idea + Reports + SearchResults -> Evaluation")
+    print("=" * 80)
+    
+    # 初始化变量
+    evaluation_result = None
+    all_evaluation_results = []
+    
+    # 检查缓存
+    if has_cache(cached_data, "evaluation_result", 
+                 lambda x: isinstance(x, dict) and x.get("evaluation_results")):
+        logger.info("✓ Found cached evaluation_result, skipping EvaluationAgent execution")
+        evaluation_result = cached_data["evaluation_result"]
+        all_evaluation_results = evaluation_result.get("evaluation_results", [])
+        print("✓ Using cached evaluation results")
+        print(f"\nEvaluation Results Summary:")
+        print(f"  Total personas evaluated: {len(all_evaluation_results)}")
+        for idx, result in enumerate(all_evaluation_results, 1):
+            eval_data = result.get("evaluation", {})
+            clarity = eval_data.get("clarity", {}).get("score", 0)
+            novelty = eval_data.get("novelty", {}).get("score", 0)
+            feasibility = eval_data.get("feasibility", {}).get("score", 0)
+            avg_score = (clarity + novelty + feasibility) / 3.0
+            print(f"  Persona {idx}: Avg Score = {avg_score:.2f}/10")
+    else:
+        # 加载personas（如果没有personas，使用空列表）
+        cache_dir = project_root / "cache"
+        personas_file = cache_dir / "reviewer_personas_redistributed.json"
+        # 如果文件不存在，尝试从环境变量或相对路径查找
+        if not personas_file.exists():
+            # 尝试从环境变量获取路径
+            env_personas_path = os.getenv("PERSONAS_FILE_PATH")
+            if env_personas_path and Path(env_personas_path).exists():
+                personas_file = Path(env_personas_path)
+            else:
+                # 尝试项目根目录下的 cache 目录
+                alt_cache_dir = project_root.parent / "cache"
+                alt_personas_file = alt_cache_dir / "reviewer_personas_redistributed.json"
+                if alt_personas_file.exists():
+                    personas_file = alt_personas_file
+        
+        personas = load_personas(personas_file, num_personas=3)
+        
+        if not personas:
+            logger.warning("No personas loaded, evaluation will be limited")
+            personas = []
+        
+        if not personas:
+            logger.warning("No personas available, skipping EvaluationAgent")
+        else:
+            logger.info(f"Loaded {len(personas)} personas for evaluation")
+            
+            # 准备基础context
+            base_evaluation_context = {
+                "idea": idea.to_dict(),
+                "search_results": search_results_dict,
                 "web_reports": web_reports,
                 "code_reports": code_reports,
                 "paper_reports": paper_reports
             }
-        }
-        
-        try:
-            grounding_result = await grounding_agent.execute(grounding_context, grounding_params)
-            grounding_claims = grounding_result.get("grounding_results", [])
-            all_grounding_results[part] = grounding_claims
             
-            # 保存grounding_result到pipeline_result.json（第三部分，按part保存）
-            update_pipeline_result(
-                pipeline_result_path,
-                grounding_result_part=part,
-                grounding_result_claims=grounding_claims
-            )
-            logger.info(f"Saved grounding_result for part '{part}' to pipeline_result.json")
+            evaluation_params = {
+                "temperature": 0.7
+            }
             
-            # 打印每个part的grounding结果
-            logger.info("=" * 80)
-            logger.info(f"GroundingAgent Output for part '{part}':")
-            logger.info("=" * 80)
-            logger.info(json.dumps(grounding_result, indent=2, ensure_ascii=False))
-            print(f"\nGrounding Results for '{part}': {len(grounding_claims)} claims processed")
-            
-        except Exception as e:
-            logger.error(f"GroundingAgent execution failed for part '{part}': {e}")
-            import traceback
-            traceback.print_exc()
-            # 继续处理其他parts
-            continue
+            try:
+                for idx, persona in enumerate(personas, 1):
+                    logger.info(f"Evaluating with persona {idx}/{len(personas)}")
+                    print(f"\n[{idx}/{len(personas)}] Evaluating with persona {idx}...")
+                    
+                    # 为当前人格创建context
+                    eval_context = base_evaluation_context.copy()
+                    eval_context["persona"] = persona
+                    
+                    # 执行评估
+                    eval_result = await evaluation_agent.execute(eval_context, evaluation_params)
+                    
+                    # 保存结果
+                    result_with_persona = {
+                        "persona_index": idx,
+                        "persona": persona,
+                        "evaluation": eval_result
+                    }
+                    all_evaluation_results.append(result_with_persona)
+                    
+                    # 打印当前人格的评估结果摘要
+                    clarity_score = eval_result.get("clarity", {}).get("score", "N/A")
+                    novelty_score = eval_result.get("novelty", {}).get("score", "N/A")
+                    feasibility_score = eval_result.get("feasibility", {}).get("score", "N/A")
+                    print(f"  Persona {idx} Results: Clarity={clarity_score}/10, "
+                          f"Novelty={novelty_score}/10, Feasibility={feasibility_score}/10")
+                
+                # 保存evaluation_result到pipeline_result.json（第四部分）
+                evaluation_result = {
+                    "evaluation_results": all_evaluation_results
+                }
+                update_pipeline_result(
+                    pipeline_result_path,
+                    evaluation_result=evaluation_result
+                )
+                logger.info(f"Saved evaluation_result to pipeline_result.json")
+                
+                # 更新缓存数据
+                cached_data["evaluation_result"] = evaluation_result
+                
+                # 打印EvaluationAgent的中间结果
+                logger.info("=" * 80)
+                logger.info("EvaluationAgent Output:")
+                logger.info("=" * 80)
+                logger.info(json.dumps(evaluation_result, indent=2, ensure_ascii=False))
+                print(f"\nEvaluation Results Summary:")
+                print(f"  Total personas evaluated: {len(all_evaluation_results)}")
+                for idx, result in enumerate(all_evaluation_results, 1):
+                    eval_data = result["evaluation"]
+                    clarity = eval_data.get("clarity", {}).get("score", 0)
+                    novelty = eval_data.get("novelty", {}).get("score", 0)
+                    feasibility = eval_data.get("feasibility", {}).get("score", 0)
+                    avg_score = (clarity + novelty + feasibility) / 3.0
+                    print(f"  Persona {idx}: Avg Score = {avg_score:.2f}/10")
+                    
+            except Exception as e:
+                logger.error(f"EvaluationAgent execution failed: {e}")
+                import traceback
+                traceback.print_exc()
+                evaluation_result = None
+                all_evaluation_results = []
     
-    # 11. 跳过EvaluationAgent
+    # 12. 执行ReportAgent (EvaluationResults -> review reports)
     print("\n" + "=" * 80)
-    print("STEP 5: EvaluationAgent - SKIPPED (not implemented yet)")
+    print("STEP 6: ReportAgent - EvaluationResults -> Review Reports")
     print("=" * 80)
-    logger.info("EvaluationAgent execution skipped as per requirements")
-    print("EvaluationAgent execution skipped. Pipeline completed up to grounding step.")
+    
+    if all_evaluation_results:
+        # 检查review_reports缓存
+        evaluation_reports = None
+        if evaluation_result and "review_reports" in evaluation_result:
+            if isinstance(evaluation_result["review_reports"], list) and len(evaluation_result["review_reports"]) > 0:
+                logger.info("✓ Found cached review_reports, skipping ReportAgent execution")
+                evaluation_reports = evaluation_result["review_reports"]
+                print("✓ Using cached review reports")
+                print(f"\nReview Report Counts:")
+                print(f"  Total Review Reports: {len(evaluation_reports)}")
+                for idx, review_report in enumerate(evaluation_reports, 1):
+                    full_report = review_report.get("full_review_report", "")
+                    if full_report:
+                        print(f"  Review Report {idx}: {len(full_report)} characters")
+        
+        # 检查final_report缓存（从pipeline_result.json中读取）
+        final_report = None
+        pipeline_data = load_pipeline_result(pipeline_result_path)
+        if "final_report" in pipeline_data and pipeline_data["final_report"]:
+            final_report = pipeline_data["final_report"]
+            logger.info("✓ Found cached final_report")
+            print("\n" + "=" * 80)
+            print("FINAL REPORT (from cache)")
+            print("=" * 80)
+            print(final_report)
+            print("=" * 80)
+            # 更新缓存数据
+            cached_data["final_report"] = final_report
+        
+        if evaluation_reports is None:
+            try:
+                logger.info("Executing ReportAgent for review reports...")
+                
+                # 准备review report的context（模式1：只有evaluation_results）
+                # 如果有 future_papers，也添加到 context 中
+                review_report_context = {
+                    "evaluation_results": all_evaluation_results  # 直接传入evaluation_results列表
+                }
+                # 从缓存中获取 future_papers（如果有）
+                future_papers = cached_data.get("future_papers", [])
+                if future_papers:
+                    review_report_context["future_papers"] = future_papers
+                    logger.info(f"Added {len(future_papers)} future papers to review report context")
+                
+                review_report_params = {
+                    "temperature": 0.7
+                }
+                
+                review_report_result = await report_agent.execute(review_report_context, review_report_params)
+                
+                # 获取review reports
+                evaluation_reports = review_report_result.get("evaluation_reports", [])
+                
+                # 获取final_report（如果有）
+                final_report = review_report_result.get("final_report")
+                
+                # 保存review_reports到pipeline_result.json（第五部分）
+                if "review_reports" not in load_pipeline_result(pipeline_result_path).get("evaluation_result", {}):
+                    # 更新evaluation_result，添加review_reports
+                    updated_evaluation_result = evaluation_result.copy()
+                    updated_evaluation_result["review_reports"] = evaluation_reports
+                    update_pipeline_result(
+                        pipeline_result_path,
+                        evaluation_result=updated_evaluation_result
+                    )
+                    # 更新缓存数据
+                    cached_data["evaluation_result"] = updated_evaluation_result
+                else:
+                    # 如果已经有review_reports字段，单独更新
+                    data = load_pipeline_result(pipeline_result_path)
+                    if "evaluation_result" in data:
+                        data["evaluation_result"]["review_reports"] = evaluation_reports
+                        save_pipeline_result(pipeline_result_path, data)
+                        # 更新缓存数据
+                        cached_data["evaluation_result"] = data["evaluation_result"]
+                
+                logger.info(f"Saved review_reports to pipeline_result.json")
+                
+                # 打印Review Report的中间结果
+                logger.info("=" * 80)
+                logger.info("ReportAgent Output (Review Reports):")
+                logger.info("=" * 80)
+                logger.info(f"Review Reports: {len(evaluation_reports)} reports generated")
+                print(f"\nReview Report Counts:")
+                print(f"  Total Review Reports: {len(evaluation_reports)}")
+                
+                # 打印review report预览
+                for idx, review_report in enumerate(evaluation_reports, 1):
+                    full_report = review_report.get("full_review_report", "")
+                    if full_report:
+                        logger.info(f"Review Report {idx} Preview: {full_report[:300]}..." if len(full_report) > 300 else f"Review Report {idx} Preview: {full_report}")
+                        print(f"  Review Report {idx}: {len(full_report)} characters")
+                
+                # 处理final_report（如果有）
+                if final_report:
+                    logger.info("=" * 80)
+                    logger.info("Final Report Generated")
+                    logger.info("=" * 80)
+                    logger.info(f"Final Report Length: {len(final_report)} characters")
+                    
+                    # 打印final_report
+                    print("\n" + "=" * 80)
+                    print("FINAL REPORT")
+                    print("=" * 80)
+                    print(final_report)
+                    print("=" * 80)
+                    
+                    # 保存final_report到pipeline_result.json
+                    update_pipeline_result(
+                        pipeline_result_path,
+                        final_report=final_report
+                    )
+                    logger.info(f"Saved final_report to pipeline_result.json")
+                    
+                    # 更新缓存数据
+                    cached_data["final_report"] = final_report
+                else:
+                    logger.info("No final_report generated (no future_papers provided)")
+                
+            except Exception as e:
+                logger.error(f"ReportAgent execution failed for review reports: {e}")
+                import traceback
+                traceback.print_exc()
+                # 不抛出异常，继续执行
+    else:
+        logger.warning("No evaluation results available, skipping review report generation")
+    
+    print("\n" + "=" * 80)
+    print("PIPELINE COMPLETED SUCCESSFULLY!")
+    print("=" * 80)
 
 
 

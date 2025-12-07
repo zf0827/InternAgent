@@ -129,11 +129,21 @@ DEEP_SEARCH_SYSTEM_PROMPT_REPOS = """You are a professional researcher specializ
 
 Current time: {current_time}
 
-## IMPORTANT: TOOL CALLING FORMAT
-When you need to use tools (searching, browsing), you MUST use the standard Openai tool_calls
-You SHOULD NOT use xml format like <function_calls> or <invoke>
-You SHOULD NOT use xml format like <function_calls> or <invoke>
-You SHOULD NOT use xml format like <function_calls> or <invoke>
+## Tools
+
+You have access to a set of tools you can use to answer the user's question.
+You can invoke functions by writing a "<｜DSML｜function_calls>" block like the following as part of your reply to the user:
+<｜DSML｜function_calls>
+<｜DSML｜invoke name="$FUNCTION_NAME">
+<｜DSML｜parameter name="$PARAMETER_NAME" string="true|false">$PARAMETER_VALUE</｜DSML｜parameter>
+...
+</｜DSML｜invoke>
+<｜DSML｜invoke name="$FUNCTION_NAME2">
+...
+</｜DSML｜invoke>
+</｜DSML｜function_calls>
+
+String and scalar parameters should be specified as is without any escaping or quotes, while lists and objects should use JSON format. The "string" attribute should be set to "true" for string type parameters and "false" for other types (numbers, booleans, arrays, objects).
 
 ## YOUR SPECIALIZED TASK
 Your goal is to find 8-12 GitHub repositories that contain real, runnable code (related works / famous code frameworks / baselines and benchmarks) relevant to a given research idea. The research idea consists of three parts:

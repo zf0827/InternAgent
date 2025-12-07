@@ -12,6 +12,7 @@ from .utils.toolkits import register_toolkits
 from .prompts.deepsearch_prompt import EXECUTOR_SYSTEM_PROMPT, DEEP_SEARCH_SYSTEM_PROMPT, DEEP_SEARCH_CONTEXT_SUMMARY_PROMPT, DEEP_SEARCH_RESULT_REPORT_PROMPT
 from .config import get_llm_config
 from .utils.tools_util import get_autogen_message_history
+from .utils.ds_conversion import patch_agent_client, convert_dsml_tool_calls_to_openai_format
 
 
 def get_researcher_system_message():
@@ -19,11 +20,12 @@ def get_researcher_system_message():
 
 
 class AutogenDeepSearchAgent:
-    def __init__(self, llm_config=None, code_execution_config=None, return_chat_history=False, save_log=False):
+    def __init__(self, llm_config=None, code_execution_config=None, return_chat_history=False, save_log=False, enable_xml_conversion_debug=False):
         self.llm_config = get_llm_config(service_type="deepsearch") if llm_config is None else llm_config
         self.code_execution_config = {"work_dir": "coding", "use_docker": False} if code_execution_config is None else code_execution_config
         self.return_chat_history = return_chat_history
         self.save_log = save_log
+        self.enable_xml_conversion_debug = enable_xml_conversion_debug
         self.max_tool_messages_before_summary = 2
         self.current_tool_call_count = 0
         self.token_limit = 2000
@@ -32,19 +34,19 @@ class AutogenDeepSearchAgent:
         AssistantAgent = self._import_assistant_agent()
         UserProxyAgent = self._import_user_proxy_agent()
 
-        # 改进的终止条件：排除 tool response 消息，避免空数组等误触发
+        # Improved termination condition: exclude tool response messages to avoid false triggers from empty arrays, etc.
         def is_termination_msg_func(x):
-            # 如果是 tool response，不应该触发终止
+            # If it's a tool response, should not trigger termination
             if x.get("role") == "tool":
                 return False
             content = x.get("content", "")
             if not content:
                 return False
-            # 检查是否包含明确的终止标记
+            # Check if contains explicit termination marker
             if "<TERMINATE>" in content:
                 return True
-            # 检查是否是 "TERMINATE" 或类似的短终止消息
-            # 但排除 JSON 数组等工具返回结果
+            # Check if it's "TERMINATE" or similar short termination message
+            # But exclude JSON arrays and other tool return results
             if content.strip() == "TERMINATE" or (len(content.split("TERMINATE")[-1].strip()) < 5 and "TERMINATE" in content):
                 return True
             return False
@@ -61,7 +63,7 @@ class AutogenDeepSearchAgent:
             system_message=EXECUTOR_SYSTEM_PROMPT,
             human_input_mode="NEVER",
             llm_config=self.llm_config,
-            code_execution_config=False,  # 禁用代码执行，避免误执行JSON代码块
+            code_execution_config=False,  # Disable code execution to avoid mistakenly executing JSON code blocks
             is_termination_msg=is_termination_msg_func,
         )
 
@@ -74,6 +76,7 @@ class AutogenDeepSearchAgent:
 
         self._register_tools()
         self._patch_agent_message_handlers()
+        self._patch_llm_client_to_convert_xml_tool_calls()
 
     def _register_tools(self):
         register_toolkits([
@@ -100,6 +103,36 @@ class AutogenDeepSearchAgent:
 
         self.executor._process_received_message = executor_receive_with_summary
         self.researcher._process_received_message = researcher_receive_with_summary
+
+    def _patch_llm_client_to_convert_xml_tool_calls(self):
+        """
+        Patch llm_client to convert XML format tool calls
+        
+        This method intercepts completions returned from API endpoints and uses
+        convert_dsml_tool_calls_to_openai_format from ds_conversion module to convert
+        DeepSeek-V3.2 style DSML tool calls to OpenAI format.
+        
+        How it works:
+        1. Intercept responses from client.create()
+        2. Check if response contains XML format tool calls (in content)
+        3. If present, use convert_dsml_tool_calls_to_openai_format for conversion
+        4. Return converted completion (with standard format tool_calls)
+        """
+        # Patch researcher's client
+        patch_agent_client(
+            self.researcher,
+            "researcher",
+            convert_dsml_tool_calls_to_openai_format,
+            self.enable_xml_conversion_debug
+        )
+        
+        # Patch executor's client (if exists)
+        patch_agent_client(
+            self.executor,
+            "executor",
+            convert_dsml_tool_calls_to_openai_format,
+            self.enable_xml_conversion_debug
+        )
 
     def _summarize_tool_response(self, chat_history, current_message):
         tool_calls = chat_history[-2]["tool_calls"]
@@ -239,19 +272,19 @@ class AutogenDeepSearchAgent:
     def _ensure_agents(self):
         AssistantAgent = self._import_assistant_agent()
         UserProxyAgent = self._import_user_proxy_agent()
-        # 改进的终止条件：排除 tool response 消息，避免空数组等误触发
+        # Improved termination condition: exclude tool response messages to avoid false triggers from empty arrays, etc.
         def is_termination_msg_func(x):
-            # 如果是 tool response，不应该触发终止
+            # If it's a tool response, should not trigger termination
             if x.get("role") == "tool":
                 return False
             content = x.get("content", "")
             if not content:
                 return False
-            # 检查是否包含明确的终止标记
+            # Check if contains explicit termination marker
             if "<TERMINATE>" in content:
                 return True
-            # 检查是否是 "TERMINATE" 或类似的短终止消息
-            # 但排除 JSON 数组等工具返回结果
+            # Check if it's "TERMINATE" or similar short termination message
+            # But exclude JSON arrays and other tool return results
             if content.strip() == "TERMINATE" or (len(content.split("TERMINATE")[-1].strip()) < 5 and "TERMINATE" in content):
                 return True
             return False
@@ -267,8 +300,9 @@ class AutogenDeepSearchAgent:
             system_message=EXECUTOR_SYSTEM_PROMPT,
             human_input_mode="NEVER",
             llm_config=self.llm_config,
-            code_execution_config=False,  # 禁用代码执行，避免误执行JSON代码块
+            code_execution_config=False,  # Disable code execution to avoid mistakenly executing JSON code blocks
             is_termination_msg=is_termination_msg_func,
         )
         self._register_tools()
         self._patch_agent_message_handlers()
+        self._patch_llm_client_to_convert_xml_tool_calls()
