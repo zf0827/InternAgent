@@ -8,6 +8,7 @@ RepoAnalyzer, ImportanceScorer, ContextBuilder, and TaskMatcher.
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 from typing import Dict, List, Optional, Callable
@@ -295,6 +296,45 @@ class SimplePipeline:
         """Initialize simple pipeline."""
         self.pipeline = RepoContextPipeline(repo_path)
     
+    def get_readme(self) -> Optional[str]:
+        """
+        Locate and return README content as text.
+        
+        Searches the repository directory for a README file (case-insensitive,
+        matching names like readme.md/readme). Returns file content if found,
+        otherwise None.
+        """
+        repo_dir = Path(self.pipeline.repo_path)
+        if not repo_dir.exists():
+            logger.warning(f"Repository path does not exist: {repo_dir}")
+            return None
+        
+        candidates = []
+        for root, _, files in os.walk(repo_dir):
+            for fname in files:
+                name_lower = fname.lower()
+                if name_lower in {"readme.md", "readme"}:
+                    candidates.append(Path(root) / fname)
+            # Prefer README near the root; stop descending after first level
+            if root == str(repo_dir):
+                # continue to walk deeper only if not found at root
+                if candidates:
+                    break
+        if not candidates:
+            return None
+        
+        # Choose the first candidate (root-level preferred)
+        readme_path = sorted(candidates, key=lambda p: len(p.parts))[0]
+        try:
+            with open(readme_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except UnicodeDecodeError:
+            with open(readme_path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Failed to read README at {readme_path}: {e}")
+            return None
+    
     def get_context(self, max_tokens: int = 8000, format: str = 'dict') -> any:
         """
         Get repository context.
@@ -333,30 +373,65 @@ class SimplePipeline:
         return self.pipeline.score_importance(top_k=top_k)
     
     @staticmethod
+    def _extract_github_repo_url(url: str) -> Optional[str]:
+        """
+        Extract the base GitHub repository URL from various GitHub URL formats.
+        
+        Handles URLs like:
+        - https://github.com/owner/repo
+        - https://github.com/owner/repo.git
+        - https://github.com/owner/repo/discussions/538
+        - https://github.com/owner/repo/issues/172
+        - https://github.com/owner/repo/blob/master/path/to/file.md
+        - https://github.com/owner/repo/releases
+        - https://github.com/owner/repo/tree/branch/path
+        
+        Args:
+            url: GitHub URL in any format
+            
+        Returns:
+            Git clone URL (e.g., https://github.com/owner/repo.git) or None if invalid
+        """
+        # Pattern to match github.com/owner/repo
+        # Matches: github.com (or www.github.com) / owner / repo
+        pattern = r'(?:https?://)?(?:www\.)?github\.com/([^/]+)/([^/]+)'
+        match = re.search(pattern, url)
+        
+        if not match:
+            logger.warning(f"Invalid GitHub URL format: {url}")
+            return None
+        
+        owner = match.group(1)
+        repo = match.group(2)
+        
+        # Remove .git suffix if present in repo name
+        repo = repo.replace('.git', '')
+        
+        # Construct the git URL
+        git_url = f"https://github.com/{owner}/{repo}.git"
+        
+        return git_url
+    
+    @staticmethod
     def download_github_repo(repo_url: str, target_dir: str) -> Optional[str]:
         """
         Download GitHub repository to a target directory.
         
         Args:
-            repo_url: GitHub repository URL
+            repo_url: GitHub repository URL (can be in various formats)
             target_dir: Target directory for cloning
             
         Returns:
             Local path to the cloned repository, or None if download fails
         """
-        # Handle URLs with /tree/ branch references
-        if '/tree/' in repo_url:
-            repo_url = repo_url.split('/tree/')[0]
+        # Extract the base GitHub repository URL
+        git_url = SimplePipeline._extract_github_repo_url(repo_url)
+        if git_url is None:
+            logger.error(f"Failed to extract GitHub repository URL from: {repo_url}")
+            return None
         
-        if '.git' in repo_url:
-            git_idx = repo_url.find('.git')
-            repo_url = repo_url[:git_idx + 4]  # +4 to include '.git'
-
-        # Ensure URL ends with .git
-        if not repo_url.endswith('.git'):
-            repo_url = repo_url + '.git'
-        
-        repo_name = repo_url.split('/')[-1].replace('.git', '')
+        # Extract repo name for local path
+        repo_name = git_url.split('/')[-1].replace('.git', '')
         local_path = os.path.join(target_dir, repo_name)
         
         # Remove existing directory if it exists
@@ -367,12 +442,12 @@ class SimplePipeline:
                 logger.warning(f"Failed to remove existing directory {local_path}: {e}")
                 return None
         
-        logger.info(f"Downloading GitHub repository from {repo_url} to {local_path}")
+        logger.info(f"Downloading GitHub repository from {git_url} to {local_path}")
         
         try:
             # Clone repository with depth=1 for faster download
             result = subprocess.run(
-                ['git', 'clone', '--depth', '1', repo_url, local_path],
+                ['git', 'clone', '--depth', '1', git_url, local_path],
                 capture_output=True,
                 text=True,
                 check=True,

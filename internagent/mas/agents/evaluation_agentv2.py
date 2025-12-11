@@ -1,9 +1,9 @@
 """
-Evaluation Agent for InternAgent
+Evaluation Agent V2 for InternAgent
 
-This module provides the EvaluationAgent that evaluates research ideas from multiple
-aspects: clarity, novelty, validity, feasibility, and significance. It contains five 
-sub-agents that perform specialized evaluations and then synthesizes their results.
+This module provides the EvaluationAgentV2 that evaluates research ideas from multiple
+aspects using grounded reports from GroundingAgentV2. It processes idea parts and their
+associated report summaries to provide comprehensive evaluations.
 """
 
 import logging
@@ -12,13 +12,14 @@ import random
 from typing import Dict, Any, Optional, List
 
 from .base_agent import BaseAgent, AgentExecutionError
+from ..tools.searchersv2.models import Idea
 
 logger = logging.getLogger(__name__)
 
 
-class EvaluationAgent(BaseAgent):
+class EvaluationAgentV2(BaseAgent):
     """
-    Agent that evaluates research ideas from multiple aspects.
+    Agent that evaluates research ideas from multiple aspects using grounded reports.
     
     Contains five sub-agents:
     - ClarityAgent: Evaluates how well the title and abstract summarize the paper, clarity and structure
@@ -30,7 +31,7 @@ class EvaluationAgent(BaseAgent):
     
     def __init__(self, model, config: Dict[str, Any]):
         super().__init__(model, config)
-        self.agent_type = "EvaluationAgent"
+        self.agent_type = "EvaluationAgentV2"
         self.temperature = config.get("temperature", 0.7)
         
         # Initialize sub-agents (as internal classes)
@@ -40,7 +41,7 @@ class EvaluationAgent(BaseAgent):
         self.feasibility_agent = self._FeasibilityAgent(model, config)
         self.significance_agent = self._SignificanceAgent(model, config)
         
-        logger.info(f"Initialized EvaluationAgent with five sub-agents")
+        logger.info(f"Initialized EvaluationAgentV2 with five sub-agents")
     
     def _extract_idea_text(self, idea: Any) -> str:
         """
@@ -52,90 +53,45 @@ class EvaluationAgent(BaseAgent):
         Returns:
             Formatted idea text string
         """
+        if isinstance(idea, Idea):
+            return idea.get_full_text()
+        
         if isinstance(idea, str):
             return idea
         
         if isinstance(idea, dict):
-            raw = idea.get("raw_text")
-            if raw:
-                return raw
-            
-            # Build from structured fields
-            parts = []
-            if idea.get('title'):
-                parts.append(f"Title: {idea.get('title', '')}")
-            if idea.get('abstract'):
-                parts.append(f"Abstract: {idea.get('abstract', '')}")
-            if idea.get('motivation'):
-                parts.append(f"Motivation: {idea.get('motivation', '')}")
-            if idea.get('research_question'):
-                parts.append(f"Research Question: {idea.get('research_question', '')}")
-            if idea.get('method'):
-                parts.append(f"Method: {idea.get('method', '')}")
-            if idea.get('experimental_setting'):
-                parts.append(f"Experimental Setting: {idea.get('experimental_setting', '')}")
-            if idea.get('expected_results'):
-                parts.append(f"Expected Results: {idea.get('expected_results', '')}")
-            
-            return "\n\n".join(parts) if parts else ""
-        
-        # If it's an Idea object with get_full_text method
-        if hasattr(idea, 'get_full_text'):
-            return idea.get_full_text()
+            idea_obj = Idea.from_dict(idea)
+            return idea_obj.get_full_text()
         
         return str(idea)
     
     def _extract_idea_parts(self, idea: Any) -> Dict[str, str]:
         """
-        Extract specific parts of idea (motivation, research_question, method).
+        Extract specific parts of idea as dictionary.
         
         Args:
             idea: Can be a string, dict with idea fields, or Idea object
             
         Returns:
-            Dictionary with motivation, research_question, and method
+            Dictionary with part_name -> part_content
         """
-        result = {
-            "motivation": "",
-            "research_question": "",
-            "method": ""
-        }
+        if isinstance(idea, Idea):
+            idea_dict = idea.to_dict()
+        elif isinstance(idea, dict):
+            idea_obj = Idea.from_dict(idea)
+            idea_dict = idea_obj.to_dict()
+        else:
+            return {}
         
-        if isinstance(idea, dict):
-            result["motivation"] = idea.get("motivation", "")
-            result["research_question"] = idea.get("research_question", "")
-            result["method"] = idea.get("method", "")
-        elif hasattr(idea, 'motivation'):
-            result["motivation"] = getattr(idea, 'motivation', '')
-            result["research_question"] = getattr(idea, 'research_question', '')
-            result["method"] = getattr(idea, 'method', '')
+        # Extract only the part fields (not the _list fields)
+        result = {}
+        for key in ['basic_idea', 'motivation', 'research_question', 
+                   'method', 'experimental_setting', 'expected_results']:
+            value = idea_dict.get(key)
+            if value:
+                result[key] = value
         
         return result
-    
-    def _extract_github_file_trees(self, search_results: Dict[str, Any]) -> List[Dict[str, str]]:
-        """
-        Extract file_tree from github_repos in search_results.
-        
-        Args:
-            search_results: Dictionary from SearchResults.to_dict()
-            
-        Returns:
-            List of dictionaries with title, url, and file_tree
-        """
-        github_repos = search_results.get("github_repos", [])
-        file_trees = []
-        
-        for repo in github_repos:
-            if isinstance(repo, dict):
-                file_tree = repo.get("file_tree")
-                if file_tree:
-                    file_trees.append({
-                        "title": repo.get("title", ""),
-                        "url": repo.get("url", ""),
-                        "file_tree": file_tree
-                    })
-        
-        return file_trees
     
     async def execute(self, context: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -144,11 +100,9 @@ class EvaluationAgent(BaseAgent):
         Args:
             context: Must contain:
                 - idea: The research idea to evaluate
-                - search_results: SearchResults dictionary
+                - grounding_results: GroundingAgentV2 output dictionary
+                    Format: {part_name: {report_type: [{summary, score, report_id}, ...]}}
                 - persona: Reviewer persona dictionary (optional)
-                - web_reports: Web research reports (optional)
-                - code_reports: Code research reports (optional)
-                - paper_reports: Paper research reports (optional)
             params: Additional parameters (temperature override, etc.)
             
         Returns:
@@ -165,36 +119,28 @@ class EvaluationAgent(BaseAgent):
         if not idea:
             raise AgentExecutionError("context must contain 'idea'")
         
-        search_results = context.get("search_results") or context.get("search_result")
-        if not search_results:
-            raise AgentExecutionError("context must contain 'search_results'")
+        grounding_results = context.get("grounding_results")
+        if not grounding_results:
+            raise AgentExecutionError("context must contain 'grounding_results'")
         
         persona = context.get("persona", {})
-        web_report = context.get("web_reports", [])
-        code_report = context.get("code_reports", [])
-        paper_report = context.get("paper_reports", [])
         
-        # Extract idea text
+        # Extract idea text and parts
         idea_text = self._extract_idea_text(idea)
         idea_parts = self._extract_idea_parts(idea)
-        
-        # Extract github file trees
-        github_file_trees = self._extract_github_file_trees(search_results)
         
         # Execute five sub-agents in parallel
         clarity_task = self.clarity_agent.evaluate(
             idea_text=idea_text,
-            web_report=web_report,
-            code_report=code_report,
-            paper_report=paper_report,
+            idea_parts=idea_parts,
+            grounding_results=grounding_results,
             persona=persona,
             temperature=params.get("temperature", self.temperature)
         )
         
         novelty_task = self.novelty_agent.evaluate(
             idea_parts=idea_parts,
-            paper_report=paper_report,
-            web_report=web_report,
+            grounding_results=grounding_results,
             persona=persona,
             temperature=params.get("temperature", self.temperature)
         )
@@ -202,25 +148,22 @@ class EvaluationAgent(BaseAgent):
         validity_task = self.validity_agent.evaluate(
             idea_text=idea_text,
             idea_parts=idea_parts,
-            paper_report=paper_report,
-            web_report=web_report,
-            code_report=code_report,
+            grounding_results=grounding_results,
             persona=persona,
             temperature=params.get("temperature", self.temperature)
         )
         
         feasibility_task = self.feasibility_agent.evaluate(
             idea_text=idea_text,
-            code_report=code_report,
-            github_file_trees=github_file_trees,
+            idea_parts=idea_parts,
+            grounding_results=grounding_results,
             persona=persona,
             temperature=params.get("temperature", self.temperature)
         )
         
         significance_task = self.significance_agent.evaluate(
             idea_parts=idea_parts,
-            paper_report=paper_report,
-            web_report=web_report,
+            grounding_results=grounding_results,
             persona=persona,
             temperature=params.get("temperature", self.temperature)
         )
@@ -326,40 +269,25 @@ class EvaluationAgent(BaseAgent):
         }
     
     @staticmethod
-    def _mask_report_by_ratio(reports: List[Dict[str, Any]], ratio: float, report_type: str = "generic") -> str:
+    def _filter_reports_by_ratio(reports: List[Dict[str, Any]], ratio: float) -> List[Dict[str, Any]]:
         """
-        Randomly mask reports by ratio - select integer number of reports to show.
+        Filter reports by ratio - select integer number of reports to show.
         
         Args:
-            reports: List of report dictionaries (web/code/paper reports)
+            reports: List of report dictionaries with {summary, score, report_id}
             ratio: Retention ratio (0.0-1.0), e.g., 0.7 means retaining 70% of reports
-            report_type: Type of report - "web", "code", or "paper"
-                    
+            
         Returns:
-            Concatenated content of selected reports
+            Filtered list of reports
         """
         if not reports:
-            if report_type == "paper":
-                return "[No paper research reports available]"
-            elif report_type in ["web", "code"]:
-                return "[No research reports available]"
-            else:
-                return ""
+            return []
         
         if ratio >= 1.0:
-            # Return all reports' content
-            if report_type in ["web", "code"]:
-                return EvaluationAgent._format_web_code_reports(reports)
-            elif report_type == "paper":
-                return EvaluationAgent._format_paper_reports(reports)
-            else:
-                return ""
+            return reports
         
         if ratio <= 0.0:
-            if report_type == "paper":
-                return "[Paper research reports masked based on reviewer's background knowledge level]"
-            else:
-                return "[Research reports masked based on reviewer's background knowledge level]"
+            return []
         
         # Calculate number of reports to keep (integer)
         num_reports = len(reports)
@@ -367,26 +295,19 @@ class EvaluationAgent(BaseAgent):
         
         # Randomly select reports to keep
         selected_indices = random.sample(range(num_reports), num_keep)
-        selected_reports = [reports[idx] for idx in sorted(selected_indices)]
-        
-        # Format selected reports
-        if report_type in ["web", "code"]:
-            return EvaluationAgent._format_web_code_reports(selected_reports)
-        elif report_type == "paper":
-            return EvaluationAgent._format_paper_reports(selected_reports)
-        else:
-            return ""
-
+        return [reports[idx] for idx in sorted(selected_indices)]
+    
     @staticmethod
-    def _format_web_code_reports(reports: List[Dict[str, Any]]) -> str:
+    def _format_grounded_reports(reports: List[Dict[str, Any]], report_type: str) -> str:
         """
-        Format web/code reports for display in prompt.
+        Format grounded reports (from GroundingAgentV2) for display in prompt.
         
         Args:
-            reports: List of web/code report dictionaries
+            reports: List of report dictionaries with {summary, score, report_id}
+            report_type: Type of report - "paper_report", "web_report", or "code_report"
             
         Returns:
-            Formatted string containing report content
+            Formatted string containing report summaries
         """
         if not reports:
             return ""
@@ -395,126 +316,101 @@ class EvaluationAgent(BaseAgent):
         for i, report in enumerate(reports, 1):
             if not isinstance(report, dict):
                 continue
-                
-            # Extract report content
-            content = report.get("content", {})
-            if isinstance(content, dict):
-                report_content = content.get("report_content", "")
-                if report_content:
-                    # Add report identifier
-                    report_id = report.get("report_id", f"Report_{i}")
-                    formatted_reports.append(f"--- {report_id} ---\n{report_content}")
+            
+            summary = report.get("summary", "")
+            score = report.get("score", 0)
+            report_id = report.get("report_id", f"{report_type}_{i}")
+            
+            if summary:
+                formatted_reports.append(f"--- {report_id} (Relevance Score: {score}/10) ---\n{summary}")
         
         if formatted_reports:
             return "\n\n".join(formatted_reports)
         else:
-            return "[No report content available]"
-
-    @staticmethod
-    def _format_paper_reports(paper_reports: List[Dict[str, Any]]) -> str:
-        """
-        Format paper reports for display in prompt.
-        
-        Args:
-            paper_reports: List of paper report dictionaries
-            
-        Returns:
-            Formatted string containing paper reports
-        """
-        if not paper_reports:
             return ""
-        
-        formatted_reports = []
-        for i, paper in enumerate(paper_reports, 1):
-            if not isinstance(paper, dict):
-                continue
-                
-            # Extract paper metadata
-            metadata = paper.get("paper_metadata", {})
-            title = metadata.get("title", "Unknown Title")
-            authors = metadata.get("authors", [])
-            year = metadata.get("year", "")
-            url = metadata.get("url", "")
-            
-            # Build formatted report
-            formatted = f"--- Paper {i}: {title} ---\n"
-            if authors:
-                formatted += f"Authors: {', '.join(authors)}\n"
-            if year:
-                formatted += f"Year: {year}\n"
-            if url:
-                formatted += f"URL: {url}\n"
-            
-            # Add extracted information (handle both string and list formats)
-            if paper.get("basic_idea"):
-                basic_idea = paper['basic_idea']
-                if isinstance(basic_idea, list):
-                    formatted += f"Basic Idea: {' '.join(basic_idea)}\n"
-                else:
-                    formatted += f"Basic Idea: {basic_idea}\n"
-            
-            if paper.get("motivation"):
-                motivation = paper['motivation']
-                if isinstance(motivation, list):
-                    formatted += f"Motivation:\n" + "\n".join([f"  - {m}" for m in motivation]) + "\n"
-                else:
-                    formatted += f"Motivation: {motivation}\n"
-            
-            if paper.get("research_question"):
-                questions = paper['research_question']
-                if isinstance(questions, list):
-                    formatted += f"Research Questions:\n" + "\n".join([f"  - {q}" for q in questions]) + "\n"
-                else:
-                    formatted += f"Research Questions: {questions}\n"
-            
-            if paper.get("method"):
-                method = paper['method']
-                if isinstance(method, list):
-                    formatted += f"Method:\n" + "\n".join([f"  - {m}" for m in method]) + "\n"
-                else:
-                    formatted += f"Method: {method}\n"
-            
-            if paper.get("expected_results"):
-                results = paper['expected_results']
-                if isinstance(results, list):
-                    formatted += f"Expected Results:\n" + "\n".join([f"  - {r}" for r in results]) + "\n"
-                else:
-                    formatted += f"Expected Results: {results}\n"
-            
-            # Add experimental setting if available
-            if paper.get("experimental_setting"):
-                exp_setting = paper['experimental_setting']
-                if isinstance(exp_setting, list):
-                    formatted += f"Experimental Setting:\n" + "\n".join([f"  - {s}" for s in exp_setting]) + "\n"
-                else:
-                    formatted += f"Experimental Setting: {exp_setting}\n"
-            
-            formatted_reports.append(formatted.strip())
-        
-        return "\n\n".join(formatted_reports)
-
+    
     @staticmethod
-    def _filter_file_trees_by_ratio(file_trees: List[Dict[str, str]], ratio: float) -> List[Dict[str, str]]:
+    def _build_context_from_grounding(grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
+                                     idea_parts: Dict[str, str],
+                                     part_list: List[str],
+                                     type_list: List[str],
+                                     persona: Dict[str, Any]) -> str:
         """
-        Filter file_trees by ratio, keeping only a certain proportion of repositories.
+        Build context string from grounding results, filtered by part_list and type_list.
         
         Args:
-            file_trees: List of file trees
-            ratio: Retention ratio (0.0-1.0), e.g., 0.7 means retaining 70% of repositories
+            grounding_results: Output from GroundingAgentV2
+                Format: {part_name: {report_type: [{summary, score, report_id}, ...]}}
+            idea_parts: Dictionary of idea parts (part_name -> content)
+            part_list: List of part names to include
+            type_list: List of report types to include (e.g., ["paper_report", "web_report"])
+            persona: Reviewer persona dictionary
             
         Returns:
-            Filtered list of file trees
+            Formatted context string
         """
-        if not file_trees or ratio >= 1.0:
-            return file_trees
-        if ratio <= 0.0:
-            return []
+        # Extract background_knowledge ratios
+        lit_ratio = 1.0
+        meth_ratio = 1.0
+        app_ratio = 1.0
         
-        # Calculate number of repositories to keep
-        num_keep = max(1, int(len(file_trees) * ratio))
+        if persona and persona.get("background_knowledge"):
+            bg_knowledge = persona.get("background_knowledge", {})
+            lit_score = bg_knowledge.get("literature_familiarity", 10)
+            meth_score = bg_knowledge.get("methodology_depth", 10)
+            app_score = bg_knowledge.get("application_experience", 10)
+            lit_ratio = max(0.0, min(1.0, lit_score / 10.0))
+            meth_ratio = max(0.0, min(1.0, meth_score / 10.0))
+            app_ratio = max(0.0, min(1.0, app_score / 10.0))
         
-        # Randomly select repositories to keep
-        return random.sample(file_trees, num_keep)
+        context_parts = []
+        
+        # Process each part in part_list
+        for part_name in part_list:
+            # Get idea part content
+            part_content = idea_parts.get(part_name, "")
+            if not part_content:
+                # Skip if no content for this part
+                continue
+            
+            # Build part section
+            part_section = f"\n=== {part_name.upper().replace('_', ' ')} ===\n{part_content}\n"
+            
+            # Process each report type in type_list
+            has_reports = False
+            part_reports = grounding_results.get(part_name, {})
+            
+            for report_type in type_list:
+                if report_type not in part_reports:
+                    continue
+                
+                reports = part_reports[report_type]
+                if not reports:
+                    continue
+                
+                # Apply filtering based on report type
+                if report_type in ["paper_report", "web_report"]:
+                    filtered_reports = EvaluationAgentV2._filter_reports_by_ratio(reports, lit_ratio)
+                elif report_type == "code_report":
+                    # Use methodology_depth for code reports
+                    filtered_reports = EvaluationAgentV2._filter_reports_by_ratio(reports, meth_ratio)
+                else:
+                    filtered_reports = reports
+                
+                if filtered_reports:
+                    has_reports = True
+                    formatted = EvaluationAgentV2._format_grounded_reports(filtered_reports, report_type)
+                    if formatted:
+                        type_label = report_type.replace("_", " ").title()
+                        part_section += f"\n--- {type_label} ---\n{formatted}\n"
+            
+            # Always add part section if it has content, even if no reports
+            context_parts.append(part_section)
+        
+        if context_parts:
+            return "\n".join(context_parts)
+        else:
+            return "\n[No relevant reports available for the selected parts and types.]"
     
     @staticmethod
     def _build_persona_section(persona: Dict[str, Any]) -> str:
@@ -546,7 +442,7 @@ class EvaluationAgent(BaseAgent):
             persona_section += f"  - Literature Familiarity: {lit}/10\n"
             persona_section += f"  - Methodology Depth: {meth}/10\n"
             persona_section += f"  - Application Experience: {app}/10\n\n"
-            persona_section += "Note: Based on the background knowledge scores above, the research reports and code repositories provided below have been randomly masked to reflect the reviewer's knowledge level. Lower scores result in more content being masked.\n\n"
+            persona_section += "Note: Based on the background knowledge scores above, the research reports provided below have been randomly filtered to reflect the reviewer's knowledge level. Lower scores result in fewer reports being shown.\n\n"
         if goal:
             persona_section += f"Goal: {goal}\n\n"
         if constraints:
@@ -564,6 +460,9 @@ class EvaluationAgent(BaseAgent):
             self.model = model
             self.config = config
             self.system_prompt = config.get("clarity_system_prompt", self._default_system_prompt())
+            # Define which parts and report types this agent needs
+            self.part_list = config.get("clarity_part_list", ["basic_idea", "motivation", "research_question", "method", "experimental_setting"])
+            self.type_list = config.get("clarity_type_list", ["paper_report", "web_report", "code_report"])
         
         def _default_system_prompt(self) -> str:
             return (
@@ -592,44 +491,26 @@ class EvaluationAgent(BaseAgent):
                 "required": ["score", "reason"]
             }
         
-        def _build_clarity_prompt(self, idea_text: str, web_report: str, code_report: str, 
-                                  paper_report: str, persona: Dict[str, Any] = None) -> str:
+        def _build_clarity_prompt(self, idea_text: str, idea_parts: Dict[str, str],
+                                  grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
+                                  persona: Dict[str, Any] = None) -> str:
             """Build prompt for clarity evaluation."""
-            persona_section = EvaluationAgent._build_persona_section(persona) if persona else ""
+            persona_section = EvaluationAgentV2._build_persona_section(persona) if persona else ""
             
-            # Extract background_knowledge scores and apply masking
-            lit_ratio = 1.0
-            meth_ratio = 1.0
-            if persona and persona.get("background_knowledge"):
-                bg_knowledge = persona.get("background_knowledge", {})
-                lit_score = bg_knowledge.get("literature_familiarity", 10)
-                meth_score = bg_knowledge.get("methodology_depth", 10)
-                lit_ratio = max(0.0, min(1.0, lit_score / 10.0))
-                meth_ratio = max(0.0, min(1.0, meth_score / 10.0))
-            
-            # Apply masking with report type specification
-            masked_web_report = EvaluationAgent._mask_report_by_ratio(web_report, lit_ratio, "web") if web_report else ""
-            masked_paper_report = EvaluationAgent._mask_report_by_ratio(paper_report, lit_ratio, "paper") if paper_report else ""
-            masked_code_report = EvaluationAgent._mask_report_by_ratio(code_report, meth_ratio, "code") if code_report else ""
-                        
-            reports_section = ""
-            if masked_web_report:
-                reports_section += f"\n\n=== Web Research Report ===\n{masked_web_report}\n"
-            if masked_code_report:
-                reports_section += f"\n\n=== Code Research Report ===\n{masked_code_report}\n"
-            if masked_paper_report:
-                reports_section += f"\n\n=== Paper Research Report ===\n{masked_paper_report}\n"
-            
-            if not reports_section:
-                reports_section = "\n\nNo research reports are available."
-
-            # reports_section = "No research reports are available."
+            # Build context from grounding results
+            context_section = EvaluationAgentV2._build_context_from_grounding(
+                grounding_results=grounding_results,
+                idea_parts=idea_parts,
+                part_list=self.part_list,
+                type_list=self.type_list,
+                persona=persona
+            )
             
             return f"""{persona_section}You are evaluating the clarity of a research idea.
 
 === Research Idea ===
 {idea_text}
-{reports_section}
+{context_section}
 
 === Evaluation Task ===
 Based on your knowledge and the provided research reports, evaluate the idea from the following perspectives:
@@ -646,16 +527,13 @@ Based on your knowledge and the provided research reports, evaluate the idea fro
 Provide a score from 0 to 10 and a detailed reason explaining your evaluation.
 
 Focus on evidence-based evaluation using both your knowledge and the provided reports."""
-#  Consider:
-# - High scores (7-10): The idea is logically consistent, factually sound, well-structured, and reasonable
-# - Medium scores (4-6): The idea has some inconsistencies or unclear aspects, but is generally reasonable
-# - Low scores (0-3): The idea has significant logical flaws, factual errors, or structural problems
         
-        async def evaluate(self, idea_text: str, web_report: str, code_report: str, 
-                          paper_report: str, persona: Dict[str, Any] = None, 
+        async def evaluate(self, idea_text: str, idea_parts: Dict[str, str],
+                          grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
+                          persona: Dict[str, Any] = None, 
                           temperature: float = 0.7) -> Dict[str, Any]:
             """Evaluate idea clarity."""
-            prompt = self._build_clarity_prompt(idea_text, web_report, code_report, paper_report, persona)
+            prompt = self._build_clarity_prompt(idea_text, idea_parts, grounding_results, persona)
             schema = self._build_clarity_schema()
             
             try:
@@ -677,6 +555,9 @@ Focus on evidence-based evaluation using both your knowledge and the provided re
             self.model = model
             self.config = config
             self.system_prompt = config.get("novelty_system_prompt", self._default_system_prompt())
+            # Define which parts and report types this agent needs
+            self.part_list = config.get("novelty_part_list", ["motivation", "basic_idea", "research_question", "method"])
+            self.type_list = config.get("novelty_type_list", ["paper_report", "web_report"])
         
         def _default_system_prompt(self) -> str:
             return (
@@ -706,46 +587,25 @@ Focus on evidence-based evaluation using both your knowledge and the provided re
                 "required": ["score", "reason"]
             }
         
-        def _build_novelty_prompt(self, idea_parts: Dict[str, str], paper_report: str, 
-                                  web_report: str, persona: Dict[str, Any] = None) -> str:
+        def _build_novelty_prompt(self, idea_parts: Dict[str, str],
+                                  grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
+                                  persona: Dict[str, Any] = None) -> str:
             """Build prompt for novelty evaluation."""
-            persona_section = EvaluationAgent._build_persona_section(persona) if persona else ""
+            persona_section = EvaluationAgentV2._build_persona_section(persona) if persona else ""
             
-            # Extract background_knowledge scores and apply masking
-            lit_ratio = 1.0
-            if persona and persona.get("background_knowledge"):
-                bg_knowledge = persona.get("background_knowledge", {})
-                lit_score = bg_knowledge.get("literature_familiarity", 10)
-                lit_ratio = max(0.0, min(1.0, lit_score / 10.0))
+            # Build context from grounding results
+            context_section = EvaluationAgentV2._build_context_from_grounding(
+                grounding_results=grounding_results,
+                idea_parts=idea_parts,
+                part_list=self.part_list,
+                type_list=self.type_list,
+                persona=persona
+            )
             
-            # Apply masking with report type specification
-            masked_paper_report = EvaluationAgent._mask_report_by_ratio(paper_report, lit_ratio, "paper") if paper_report else ""
-            masked_web_report = EvaluationAgent._mask_report_by_ratio(web_report, lit_ratio, "web") if web_report else ""
-
-            idea_section = ""
-            if idea_parts.get("motivation"):
-                idea_section += f"Motivation: {idea_parts['motivation']}\n\n"
-            if idea_parts.get("research_question"):
-                idea_section += f"Research Question: {idea_parts['research_question']}\n\n"
-            if idea_parts.get("method"):
-                idea_section += f"Method: {idea_parts['method']}\n\n"
-            
-            reports_section = ""
-            if masked_paper_report:
-                reports_section += f"\n\n=== Paper Research Report (Related Work) ===\n{masked_paper_report}\n"
-            if masked_web_report:
-                reports_section += f"\n\n=== Web Research Report (Related Discussions) ===\n{masked_web_report}\n"
-            
-            if not reports_section:
-                reports_section = "\n\nNo research reports are available."
-            
-            # reports_section = "No research reports are available."
-
             return f"""{persona_section}You are evaluating the novelty and originality of a research idea.
 
 === Research Idea (Key Components) ===
-{idea_section}
-{reports_section}
+{context_section}
 
 === Evaluation Task ===
 Based on the provided research reports describing related work, evaluate the novelty of the idea from the following perspectives:
@@ -761,16 +621,13 @@ Based on the provided research reports describing related work, evaluate the nov
 === Output Requirements ===
 Provide a score from 0 to 10 and a detailed reason explaining your evaluation.
 Focus on identifying specific similarities and differences with the related work described in the reports, and assess whether the idea introduces genuinely new problems, perspectives, or techniques."""
-#  Consider:
-# - High scores (7-10): The idea is highly novel with significant differences from existing work in methods, concepts, or conclusions
-# - Medium scores (4-6): The idea has some novel aspects but also shares similarities with existing work
-# - Low scores (0-3): The idea has significant overlap with existing work in methods, concepts, conclusions, or analysis approaches
-
-        async def evaluate(self, idea_parts: Dict[str, str], paper_report: str, 
-                          web_report: str, persona: Dict[str, Any] = None, 
+        
+        async def evaluate(self, idea_parts: Dict[str, str],
+                          grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
+                          persona: Dict[str, Any] = None, 
                           temperature: float = 0.7) -> Dict[str, Any]:
             """Evaluate idea novelty."""
-            prompt = self._build_novelty_prompt(idea_parts, paper_report, web_report, persona)
+            prompt = self._build_novelty_prompt(idea_parts, grounding_results, persona)
             schema = self._build_novelty_schema()
             
             try:
@@ -792,6 +649,9 @@ Focus on identifying specific similarities and differences with the related work
             self.model = model
             self.config = config
             self.system_prompt = config.get("feasibility_system_prompt", self._default_system_prompt())
+            # Define which parts and report types this agent needs
+            self.part_list = config.get("feasibility_part_list", ["method", "experimental_setting"])
+            self.type_list = config.get("feasibility_type_list", ["code_report"])
         
         def _default_system_prompt(self) -> str:
             return (
@@ -825,51 +685,26 @@ Focus on identifying specific similarities and differences with the related work
                 "required": ["score", "reason", "pseudocode"]
             }
         
-        def _build_feasibility_prompt(self, idea_text: str, code_report: str, 
-                                     github_file_trees: List[Dict[str, str]], 
+        def _build_feasibility_prompt(self, idea_text: str, idea_parts: Dict[str, str],
+                                     grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
                                      persona: Dict[str, Any] = None) -> str:
             """Build prompt for feasibility evaluation."""
-            persona_section = EvaluationAgent._build_persona_section(persona) if persona else ""
+            persona_section = EvaluationAgentV2._build_persona_section(persona) if persona else ""
             
-            # Extract background_knowledge scores and apply masking
-            meth_ratio = 1.0
-            app_ratio = 1.0
-            if persona and persona.get("background_knowledge"):
-                bg_knowledge = persona.get("background_knowledge", {})
-                meth_score = bg_knowledge.get("methodology_depth", 10)
-                app_score = bg_knowledge.get("application_experience", 10)
-                meth_ratio = max(0.0, min(1.0, meth_score / 10.0))
-                app_ratio = max(0.0, min(1.0, app_score / 10.0))
-            
-            # Apply masking: meth controls code_report, app controls file_trees
-            masked_code_report = EvaluationAgent._mask_report_by_ratio(code_report, meth_ratio, "code") if code_report else ""
-            filtered_file_trees = EvaluationAgent._filter_file_trees_by_ratio(github_file_trees, app_ratio) if github_file_trees else []
-            
-            file_trees_section = ""
-            if filtered_file_trees:
-                file_trees_section = "\n\n=== Available Code Repositories (File Trees) ===\n"
-                for i, repo in enumerate(filtered_file_trees, 1):
-                    file_trees_section += f"\n--- Repository {i}: {repo.get('title', 'Unknown')} ---\n"
-                    file_trees_section += f"URL: {repo.get('url', '')}\n"
-                    file_trees_section += f"File Tree:\n{repo.get('file_tree', '')}\n"
-            else:
-                file_trees_section = "\n\nNo GitHub repository file trees are available."
-            
-            code_report_section = ""
-            if masked_code_report:
-                code_report_section = f"\n\n=== Code Research Report ===\n{masked_code_report}\n"
-            else:
-                code_report_section = "\n\nNo code research report is available."
-            
-            # code_report_section = "No code research report is available."
-            # file_trees_section = "No GitHub repository file trees are available."
+            # Build context from grounding results
+            context_section = EvaluationAgentV2._build_context_from_grounding(
+                grounding_results=grounding_results,
+                idea_parts=idea_parts,
+                part_list=self.part_list,
+                type_list=self.type_list,
+                persona=persona
+            )
             
             return f"""{persona_section}You are evaluating the feasibility of a research idea.
 
 === Research Idea ===
 {idea_text}
-{code_report_section}
-{file_trees_section}
+{context_section}
 
 === Evaluation Task ===
 Based on the provided research reports and code repositories, evaluate the feasibility of this idea from the following perspectives:
@@ -891,17 +726,13 @@ Provide:
 3. Pseudocode or an implementation plan (if applicable) showing how to integrate the available code repositories to implement the idea's methodology
 
 Focus on evaluating the research design, methodology quality, and result analysis rather than just implementation feasibility."""
-# Consider:
-# - High scores (7-10): The idea can be easily implemented using available code with minimal new development
-# - Medium scores (4-6): The idea can be implemented but requires some integration work or additional components
-# - Low scores (0-3): The idea faces significant implementation challenges or requires substantial new code development
         
-        async def evaluate(self, idea_text: str, code_report: str, 
-                          github_file_trees: List[Dict[str, str]], 
+        async def evaluate(self, idea_text: str, idea_parts: Dict[str, str],
+                          grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
                           persona: Dict[str, Any] = None, 
                           temperature: float = 0.7) -> Dict[str, Any]:
             """Evaluate idea feasibility."""
-            prompt = self._build_feasibility_prompt(idea_text, code_report, github_file_trees, persona)
+            prompt = self._build_feasibility_prompt(idea_text, idea_parts, grounding_results, persona)
             schema = self._build_feasibility_schema()
             
             try:
@@ -923,6 +754,9 @@ Focus on evaluating the research design, methodology quality, and result analysi
             self.model = model
             self.config = config
             self.system_prompt = config.get("validity_system_prompt", self._default_system_prompt())
+            # Define which parts and report types this agent needs
+            self.part_list = config.get("validity_part_list", ["motivation", "basic_idea", "research_question", "method", "experimental_setting"])
+            self.type_list = config.get("validity_type_list", ["paper_report", "web_report", "code_report"])
         
         def _default_system_prompt(self) -> str:
             return (
@@ -951,43 +785,26 @@ Focus on evaluating the research design, methodology quality, and result analysi
                 "required": ["score", "reason"]
             }
         
-        def _build_validity_prompt(self, idea_text: str, idea_parts: Dict[str, str], 
-                                   paper_report: str, web_report: str, code_report: str,
+        def _build_validity_prompt(self, idea_text: str, idea_parts: Dict[str, str],
+                                   grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
                                    persona: Dict[str, Any] = None) -> str:
             """Build prompt for validity evaluation."""
-            persona_section = EvaluationAgent._build_persona_section(persona) if persona else ""
+            persona_section = EvaluationAgentV2._build_persona_section(persona) if persona else ""
             
-            # Extract background_knowledge scores and apply masking
-            lit_ratio = 1.0
-            meth_ratio = 1.0
-            if persona and persona.get("background_knowledge"):
-                bg_knowledge = persona.get("background_knowledge", {})
-                lit_score = bg_knowledge.get("literature_familiarity", 10)
-                meth_score = bg_knowledge.get("methodology_depth", 10)
-                lit_ratio = max(0.0, min(1.0, lit_score / 10.0))
-                meth_ratio = max(0.0, min(1.0, meth_score / 10.0))
-            
-            # Apply masking with report type specification
-            masked_paper_report = EvaluationAgent._mask_report_by_ratio(paper_report, lit_ratio, "paper") if paper_report else ""
-            masked_web_report = EvaluationAgent._mask_report_by_ratio(web_report, lit_ratio, "web") if web_report else ""
-            masked_code_report = EvaluationAgent._mask_report_by_ratio(code_report, meth_ratio, "code") if code_report else ""
-            
-            reports_section = ""
-            if masked_paper_report:
-                reports_section += f"\n\n=== Paper Research Report ===\n{masked_paper_report}\n"
-            if masked_web_report:
-                reports_section += f"\n\n=== Web Research Report ===\n{masked_web_report}\n"
-            if masked_code_report:
-                reports_section += f"\n\n=== Code Research Report ===\n{masked_code_report}\n"
-            
-            if not reports_section:
-                reports_section = "\n\nNo research reports are available."
+            # Build context from grounding results
+            context_section = EvaluationAgentV2._build_context_from_grounding(
+                grounding_results=grounding_results,
+                idea_parts=idea_parts,
+                part_list=self.part_list,
+                type_list=self.type_list,
+                persona=persona
+            )
             
             return f"""{persona_section}You are evaluating the validity of a research idea.
 
 === Research Idea ===
 {idea_text}
-{reports_section}
+{context_section}
 
 === Evaluation Task ===
 Based on your knowledge and the provided research reports, evaluate the validity of the idea from the following perspectives:
@@ -1007,12 +824,12 @@ Provide a score from 0 to 10 and a detailed reason explaining your evaluation.
 
 Focus on evidence-based evaluation using both your knowledge and the provided reports. Assess the rigor and validity of the theoretical and methodological foundations."""
         
-        async def evaluate(self, idea_text: str, idea_parts: Dict[str, str], 
-                          paper_report: str, web_report: str, code_report: str,
+        async def evaluate(self, idea_text: str, idea_parts: Dict[str, str],
+                          grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
                           persona: Dict[str, Any] = None, 
                           temperature: float = 0.7) -> Dict[str, Any]:
             """Evaluate idea validity."""
-            prompt = self._build_validity_prompt(idea_text, idea_parts, paper_report, web_report, code_report, persona)
+            prompt = self._build_validity_prompt(idea_text, idea_parts, grounding_results, persona)
             schema = self._build_validity_schema()
             
             try:
@@ -1034,6 +851,9 @@ Focus on evidence-based evaluation using both your knowledge and the provided re
             self.model = model
             self.config = config
             self.system_prompt = config.get("significance_system_prompt", self._default_system_prompt())
+            # Define which parts and report types this agent needs
+            self.part_list = config.get("significance_part_list", ["motivation", "basic_idea", "research_question", "method"])
+            self.type_list = config.get("significance_type_list", ["paper_report", "web_report"])
         
         def _default_system_prompt(self) -> str:
             return (
@@ -1062,45 +882,25 @@ Focus on evidence-based evaluation using both your knowledge and the provided re
                 "required": ["score", "reason"]
             }
         
-        def _build_significance_prompt(self, idea_parts: Dict[str, str], 
-                                       paper_report: str, web_report: str,
+        def _build_significance_prompt(self, idea_parts: Dict[str, str],
+                                       grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
                                        persona: Dict[str, Any] = None) -> str:
             """Build prompt for significance evaluation."""
-            persona_section = EvaluationAgent._build_persona_section(persona) if persona else ""
+            persona_section = EvaluationAgentV2._build_persona_section(persona) if persona else ""
             
-            # Extract background_knowledge scores and apply masking
-            lit_ratio = 1.0
-            if persona and persona.get("background_knowledge"):
-                bg_knowledge = persona.get("background_knowledge", {})
-                lit_score = bg_knowledge.get("literature_familiarity", 10)
-                lit_ratio = max(0.0, min(1.0, lit_score / 10.0))
-            
-            # Apply masking with report type specification
-            masked_paper_report = EvaluationAgent._mask_report_by_ratio(paper_report, lit_ratio, "paper") if paper_report else ""
-            masked_web_report = EvaluationAgent._mask_report_by_ratio(web_report, lit_ratio, "web") if web_report else ""
-            
-            idea_section = ""
-            if idea_parts.get("motivation"):
-                idea_section += f"Motivation: {idea_parts['motivation']}\n\n"
-            if idea_parts.get("research_question"):
-                idea_section += f"Research Question: {idea_parts['research_question']}\n\n"
-            if idea_parts.get("method"):
-                idea_section += f"Method: {idea_parts['method']}\n\n"
-            
-            reports_section = ""
-            if masked_paper_report:
-                reports_section += f"\n\n=== Paper Research Report (Related Work) ===\n{masked_paper_report}\n"
-            if masked_web_report:
-                reports_section += f"\n\n=== Web Research Report (Related Discussions) ===\n{masked_web_report}\n"
-            
-            if not reports_section:
-                reports_section = "\n\nNo research reports are available."
+            # Build context from grounding results
+            context_section = EvaluationAgentV2._build_context_from_grounding(
+                grounding_results=grounding_results,
+                idea_parts=idea_parts,
+                part_list=self.part_list,
+                type_list=self.type_list,
+                persona=persona
+            )
             
             return f"""{persona_section}You are evaluating the significance and potential impact of a research idea.
 
 === Research Idea (Key Components) ===
-{idea_section}
-{reports_section}
+{context_section}
 
 === Evaluation Task ===
 Based on the provided research reports describing related work, evaluate the significance of the idea from the following perspectives:
@@ -1120,12 +920,12 @@ Provide a score from 0 to 10 and a detailed reason explaining your evaluation.
 
 Focus on assessing the potential contribution and impact, considering both the immediate domain and broader research community. Compare with existing works to contextualize the significance."""
         
-        async def evaluate(self, idea_parts: Dict[str, str], 
-                          paper_report: str, web_report: str,
+        async def evaluate(self, idea_parts: Dict[str, str],
+                          grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
                           persona: Dict[str, Any] = None, 
                           temperature: float = 0.7) -> Dict[str, Any]:
             """Evaluate idea significance."""
-            prompt = self._build_significance_prompt(idea_parts, paper_report, web_report, persona)
+            prompt = self._build_significance_prompt(idea_parts, grounding_results, persona)
             schema = self._build_significance_schema()
             
             try:

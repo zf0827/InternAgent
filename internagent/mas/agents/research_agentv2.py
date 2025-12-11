@@ -232,11 +232,18 @@ class ResearchAgentV2(BaseAgent):
         web_pages: List[Source] = []
         if queries.web_queries:
             logger.info("Searching web...")
-            web_pages = self.web_searcher.search(
+            web_pairs = self.web_searcher.search(
                 queries=queries.web_queries,
                 before=before,
                 after=after,
             )
+            for src, q_idx in web_pairs:
+                if src.metadata is None:
+                    src.metadata = {}
+                src.metadata["query_index"] = q_idx
+                if q_idx is not None and q_idx < len(queries.web_queries):
+                    src.metadata["query"] = queries.web_queries[q_idx]
+                web_pages.append(src)
             logger.info(f"Found {len(web_pages)} web pages")
         
             # rerank webpages using two-stage reranking

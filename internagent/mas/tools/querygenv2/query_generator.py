@@ -641,6 +641,80 @@ class OptimizedWebQueryGenerator(dspy.Module):
         return _parse_pipe_bracket_list(getattr(result, "new_web_queries", ""))
 
 
+class OptimizedGitHubQuerySignature(dspy.Signature):
+    """
+    You generate Google Search API queries that surface GitHub repositories with runnable code for the given research idea.
+
+    Goals and scope:
+    - Find actual implementation repos (not lists/collections) that match the idea.
+    - Cover all three buckets: (A) similar research implementations/pipelines, (B) frameworks/toolkits enabling the methodology, (C) baselines/benchmarks/datasets from the experimental_setting.
+    - Prefer repos with real code, setup instructions, and recent activity (2024–2025).
+    
+    Mandatory filters:
+    - Always target GitHub with `site:github.com`.
+    - Exclude non-code collections: -awesome -survey -paper -list -collection.
+    
+    Query design:
+    - Produce 8–12 concise queries separated by "|" and wrapped in a single bracketed list: [query1|query2|...|queryk].
+    - Each query focuses on one angle (task/method, framework/toolkit, or specific benchmark/dataset) derived from basic_idea, methodology, and experimental_setting.
+    - Use clear keywords and optional alternatives (via OR) for methods, tasks, datasets, or frameworks; avoid redundant queries.
+    - Favor patterns like:
+      - "[core task or method] site:github.com -awesome -survey -paper -list -collection"
+      - "[methodology/toolkit] framework site:github.com -awesome -survey -paper -list -collection"
+      - "[benchmark or dataset] benchmark site:github.com -awesome -survey -paper -list -collection"
+    - One benchmark/baseline per query; keep queries short and ready for Google Search.
+    
+    Output only the bracketed, pipe-separated queries string—no extra text.
+    """
+    basic_idea = dspy.InputField(desc="The core basic idea of the research - main concept and innovation")
+    methodology = dspy.InputField(desc="Proposed methodology and approach - how the problem will be solved")
+    experimental_setting = dspy.InputField(desc="Experimental setting and evaluation approach")
+    
+    new_github_queries = dspy.OutputField(
+        desc=(
+            "Return only a single bracketed, pipe-separated list of 8–12 Google Search queries "
+            "targeting GitHub code repos that fit categories A/B/C: [query1|query2|...|queryk]. "
+            "Each query must include site:github.com and the negative filters "
+            "-awesome -survey -paper -list -collection, stay concise, and focus on one angle "
+            "(method/task, enabling framework/toolkit, or benchmark/dataset from experimental_setting). "
+            "No additional text or formatting beyond the bracketed list."
+        )
+    )
+
+
+class OptimizedGitHubQueryGenerator(dspy.Module):
+    """
+    Generates optimized GitHub queries using specific idea components (basic idea, methodology, experimental_setting).
+    """
+    
+    def __init__(self, config: Optional[dict] = None):
+        super().__init__()
+        if config is None:
+            config = _load_llm_config_from_env()
+
+        try:
+            self.lm = dspy.LM(
+                model=config.get("model", "gpt-4o-mini"),
+                api_key=config["api_key"],
+                api_base=config.get("api_base")
+            )
+            logger.info(f"Initialized OptimizedGitHubQueryGenerator with model: {config.get('model', 'gpt-4o-mini')}")
+        except Exception as e:
+            logger.error(f"Failed to initialize dspy with provided config: {e}")
+            raise
+        
+        self.generate_github_queries = dspy.ChainOfThought(OptimizedGitHubQuerySignature)
+    
+    def forward(self, basic_idea: str, methodology: str, experimental_setting: str) -> List[str]:
+        with dspy.settings.context(lm=self.lm):
+            result = self.generate_github_queries(
+                basic_idea=basic_idea,
+                methodology=methodology,
+                experimental_setting=experimental_setting,
+            )
+        return _parse_pipe_bracket_list(getattr(result, "new_github_queries", ""))
+
+
 class RefineQuerySignature(dspy.Signature):
     """
     You are an expert academic search strategist helping to refine and extend an existing ArXiv title search.
@@ -822,6 +896,197 @@ class RefineGenerator(dspy.Module):
         return queries
 
 
+class WebRefineSignature(dspy.Signature):
+    """
+    You are a web-search query refinement strategist. You see (1) the basic_idea,
+    (2) top-ranked web sources (each with title, summary/description, similarity_score,
+    and the query that retrieved it), and (3) the full set of original_queries (good +
+    weak). Treat queries that retrieved the top sources as “good”; the rest are “weak”
+    and likely too broad, too narrow, or slightly off-topic.
+
+    GOAL:
+    Reflect on what worked and what failed, then generate 4–8 improved web search
+    queries that surface discussions, evidence, critiques, or related implementations
+    on research-oriented sites (the Google Search API is restricted to domains like
+    x.com, medium.com, towardsdatascience.com, substack.com, reddit.com/r/MachineLearning).
+
+    ANALYSIS PROCESS:
+    1) Good queries + top source titles/summaries: extract recurring high-signal concepts,
+       phrasings, and synonyms that align with the basic_idea.
+    2) Weak queries: spot over-specific fragments to generalize/remove, and noisy/low-
+       relevance terms to avoid.
+    3) Coverage check: note which aspects are already well-covered and which angles,
+       methods, domains, or terminology are missing.
+    4) Design refined queries: recombine strong keywords, generalize over-specific bits,
+       drop noisy terms, and introduce adjacent terminology that can surface complementary
+       results while staying on-topic.
+
+    FORMAT CONSTRAINTS (follow OptimizedWebQuerySignature):
+    - Each query uses ONLY AND / OR (no NOT), with 1–3 keyword/phrase groups.
+    - Multi-word concepts must be in double quotes; use OR in parentheses for synonyms.
+    - Avoid terms implying tutorials/benchmarks/implementation guides.
+    - Output EXACTLY as [query1|query2|...|queryN], 4 ≤ N ≤ 8, no extra text.
+    """
+
+    basic_idea = dspy.InputField(desc="The original research idea text")
+    top_sources = dspy.InputField(desc="JSON list of top web sources with title/summary/similarity_score/query")
+    original_queries = dspy.InputField(desc="JSON list of original web queries")
+
+    refined_web_queries = dspy.OutputField(
+        desc="Bracketed pipe-separated list of refined web queries using AND/OR only, 3-8 items."
+    )
+
+
+class WebRefineGenerator(dspy.Module):
+    """Lightweight web refine generator."""
+
+    def __init__(self, config: Optional[dict] = None):
+        super().__init__()
+        if config is None:
+            config = _load_llm_config_from_env()
+        self.lm = dspy.LM(
+            model=config.get("model", "gpt-4o-mini"),
+            api_key=config["api_key"],
+            api_base=config.get("api_base"),
+            temperature=1.0,
+        )
+        self.generate_refined_web = dspy.ChainOfThought(WebRefineSignature)
+
+    def forward(
+        self,
+        basic_idea: str,
+        top_sources: List[Source],
+        similarity_scores: List[float],
+        source_queries: List[str],
+        original_queries: List[str],
+    ) -> List[str]:
+        payload = []
+        for i, src in enumerate(top_sources):
+            payload.append(
+                {
+                    "title": src.title,
+                    "description": src.description,
+                    "similarity_score": similarity_scores[i] if i < len(similarity_scores) else None,
+                    "query": source_queries[i] if i < len(source_queries) else "",
+                }
+            )
+
+        top_sources_json = json.dumps(payload, ensure_ascii=False)
+        original_queries_json = json.dumps(original_queries, ensure_ascii=False)
+
+        with dspy.settings.context(lm=self.lm):
+            result = self.generate_refined_web(
+                basic_idea=basic_idea,
+                top_sources=top_sources_json,
+                original_queries=original_queries_json,
+            )
+
+        return self._parse_query_list(getattr(result, "refined_web_queries", ""))
+
+    def _parse_query_list(self, query_string: str) -> List[str]:
+        if not query_string:
+            return []
+        query_string = query_string.strip()
+        if query_string.startswith("[") and query_string.endswith("]"):
+            query_string = query_string[1:-1].strip()
+        return [q.strip() for q in query_string.split("|") if q.strip()]
+
+
+class GithubRefineSignature(dspy.Signature):
+    """
+    You are a GitHub search query refinement strategist. You see (1) the basic_idea,
+    (2) top-ranked repositories (each with title, summary/description, similarity_score,
+    and the query that retrieved it), and (3) the full set of original_queries (good +
+    weak). Treat queries that found the top repos as “good”; the rest are “weak” and need
+    generalization or correction.
+
+    GOAL:
+    Propose 8–12 sharper Google Search queries that directly target GitHub repositories
+    with runnable code for the idea. Cover three buckets: (A) similar research
+    implementations/pipelines, (B) frameworks/toolkits enabling the methodology, (C)
+    baselines/benchmarks/datasets from the experimental setting.
+
+    ANALYSIS PROCESS:
+    1) Mine good queries + top repo titles/descriptions to identify strong task/method/
+       dataset signals and common phrasings.
+    2) Inspect weak queries to find over-specific fragments to broaden and noisy/off-topic
+       terms to drop.
+    3) Check coverage gaps across A/B/C buckets; add adjacent terminology or variants
+       that stay relevant.
+    4) Craft refined queries that extend recall without drifting off-topic; keep them
+       short and non-redundant.
+
+    FORMAT CONSTRAINTS (follow OptimizedGitHubQuerySignature):
+    - Each query must include `site:github.com` and the filters `-awesome -survey -paper -list -collection`.
+    - Use AND / OR only (no NOT), with 1–3 keyword/phrase groups; multi-word phrases in quotes.
+    - One benchmark/dataset or method angle per query; avoid duplicates.
+    - Output EXACTLY as [query1|query2|...|queryN], 8 ≤ N ≤ 12, no extra text.
+    """
+
+    basic_idea = dspy.InputField(desc="The original research idea text")
+    top_sources = dspy.InputField(desc="JSON list of top GitHub sources with title/summary/similarity_score/query")
+    original_queries = dspy.InputField(desc="JSON list of original GitHub queries")
+
+    refined_github_queries = dspy.OutputField(
+        desc="Bracketed pipe-separated list of refined GitHub queries using AND/OR only, 3-8 items."
+    )
+
+
+class GithubRefineGenerator(dspy.Module):
+    """Lightweight GitHub refine generator."""
+
+    def __init__(self, config: Optional[dict] = None):
+        super().__init__()
+        if config is None:
+            config = _load_llm_config_from_env()
+        self.lm = dspy.LM(
+            model=config.get("model", "gpt-4o-mini"),
+            api_key=config["api_key"],
+            api_base=config.get("api_base"),
+            temperature=1.0,
+        )
+        self.generate_refined_github = dspy.ChainOfThought(GithubRefineSignature)
+
+    def forward(
+        self,
+        basic_idea: str,
+        top_sources: List[Source],
+        similarity_scores: List[float],
+        source_queries: List[str],
+        original_queries: List[str],
+    ) -> List[str]:
+        payload = []
+        for i, src in enumerate(top_sources):
+            payload.append(
+                {
+                    "title": src.title,
+                    "description": src.description,
+                    "similarity_score": similarity_scores[i] if i < len(similarity_scores) else None,
+                    "query": source_queries[i] if i < len(source_queries) else "",
+                }
+            )
+
+        top_sources_json = json.dumps(payload, ensure_ascii=False)
+        original_queries_json = json.dumps(original_queries, ensure_ascii=False)
+
+        with dspy.settings.context(lm=self.lm):
+            result = self.generate_refined_github(
+                basic_idea=basic_idea,
+                top_sources=top_sources_json,
+                original_queries=original_queries_json,
+            )
+
+        return self._parse_query_list(getattr(result, "refined_github_queries", ""))
+
+    def _parse_query_list(self, query_string: str) -> List[str]:
+        if not query_string:
+            return []
+        query_string = query_string.strip()
+        if query_string.startswith("[") and query_string.endswith("]"):
+            query_string = query_string[1:-1].strip()
+        return [q.strip() for q in query_string.split("|") if q.strip()]
+
+
 class QueryGenerator:
     """
     Main query generator that generates queries for different platforms.
@@ -837,6 +1102,10 @@ class QueryGenerator:
         self.synonym_generator = OptimizedSynonymsGenerator(config=config)
         self.web_query_generator = OptimizedWebQueryGenerator(config=config)
         self.paper_query_generator = OptimizedPaperQueryGenerator(config=config)
+        self.github_query_generator = OptimizedGitHubQueryGenerator(config=config)
+        self.paper_refiner = RefineGenerator(config=config)
+        self.web_refiner = WebRefineGenerator(config=config)
+        self.github_refiner = GithubRefineGenerator(config=config)
     
     def generate(self, idea: Idea) -> SearchQuery:
         """
@@ -855,6 +1124,7 @@ class QueryGenerator:
         experimental_setting = (idea.experimental_setting or "").strip()
         
         paper_queries: List[str] = []
+        github_queries: List[str] = []
         web_queries: List[str] = []
         
         # Generate paper queries using new logic: core -> synonyms -> queries
@@ -913,6 +1183,17 @@ class QueryGenerator:
         except Exception as e:
             logger.warning(f"Direct paper query generator failed: {e}")
         
+        # Generate GitHub queries
+        try:
+            github_queries = self.github_query_generator(
+                basic_idea=basic_idea,
+                methodology=methodology,
+                experimental_setting=experimental_setting,
+            )
+            logger.info(f"Generated {len(github_queries)} github queries")
+        except Exception as e:
+            logger.warning(f"GitHub query generator failed: {e}")
+        
         try:
             web_queries = self.web_query_generator(
                 basic_idea=basic_idea,
@@ -924,11 +1205,12 @@ class QueryGenerator:
         
         # Clean up queries
         paper_queries = self._cleanup_queries(paper_queries)
+        github_queries = self._cleanup_queries(github_queries)
         web_queries = self._cleanup_queries(web_queries)
         
         return SearchQuery(
             paper_queries=paper_queries,
-            github_queries=[],  # Placeholder
+            github_queries=github_queries,
             kaggle_queries=[],  # Placeholder
             web_queries=web_queries,
             scholar_queries=[],  # Placeholder
@@ -947,4 +1229,75 @@ class QueryGenerator:
             seen.add(k)
             out.append(k)
         return out
+
+    # ---- refine ---- #
+    def refine_web_queries(
+        self,
+        basic_idea: str,
+        top_sources: List[Source],
+        similarity_scores: List[float],
+        source_queries: List[str],
+        original_queries: List[str],
+    ) -> List[str]:
+        try:
+            return self.web_refiner(
+                basic_idea=basic_idea,
+                top_sources=top_sources,
+                similarity_scores=similarity_scores,
+                source_queries=source_queries,
+                original_queries=original_queries,
+            )
+        except Exception as e:
+            logger.warning(f"Web refine generator failed: {e}")
+            return []
+
+    def refine_paper_queries(
+        self,
+        basic_idea: str,
+        top_sources: List[Source],
+        similarity_scores: List[float],
+        source_queries: List[str],
+        original_queries: List[str],
+    ) -> List[str]:
+        """Refine paper queries using top paper sources."""
+        try:
+            return self.paper_refiner(
+                basic_idea=basic_idea,
+                top_sources=top_sources,
+                similarity_scores=similarity_scores,
+                source_queries=source_queries,
+                original_queries=original_queries,
+            )
+        except Exception as e:
+            logger.warning(f"Paper refine generator failed: {e}")
+            return []
+
+    def refine_github_queries(
+        self,
+        basic_idea: str,
+        top_sources: List[Source],
+        similarity_scores: List[float],
+        source_queries: List[str],
+        original_queries: List[str],
+    ) -> List[str]:
+        try:
+            return self.github_refiner(
+                basic_idea=basic_idea,
+                top_sources=top_sources,
+                similarity_scores=similarity_scores,
+                source_queries=source_queries,
+                original_queries=original_queries,
+            )
+        except Exception as e:
+            logger.warning(f"GitHub refine generator failed: {e}")
+            return []
+
+
+__all__ = [
+    "QueryGenerator",
+    "RefineGenerator",
+    "WebRefineGenerator",
+    "GithubRefineGenerator",
+    "generate_queries",
+]
 

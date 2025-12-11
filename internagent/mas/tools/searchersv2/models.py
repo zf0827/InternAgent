@@ -261,6 +261,7 @@ class Source:
     page_links: Optional[List[str]] = None
     page_raw_text: Optional[str] = None
     repo_context: Optional[str] = None
+    repo_readme: Optional[str] = None
 
     def __post_init__(self):
         if self.title and not self.normalized_title:
@@ -302,6 +303,7 @@ class Source:
             "page_links": self.page_links,
             "page_raw_text": self.page_raw_text,
             "repo_context": self.repo_context,
+            "repo_readme": self.repo_readme,
         }
 
     def __str__(self) -> str:
@@ -362,6 +364,7 @@ class Source:
             page_links=data.get("page_links"),
             page_raw_text=data.get("page_raw_text"),
             repo_context=data.get("repo_context"),
+            repo_readme=data.get("repo_readme"),
         )
 
 
@@ -378,6 +381,7 @@ class SearchResults:
         kaggle_results: List of Kaggle datasets/notebooks
         web_pages: List of web page sources
         scholar_results: List of Google Scholar results
+        refined_queries: Refined queries generated after iteration (optional)
         total_count: Total number of sources found
     """
     idea: Idea
@@ -387,6 +391,7 @@ class SearchResults:
     kaggle_results: List[Source] = field(default_factory=list)
     web_pages: List[Source] = field(default_factory=list)
     scholar_results: List[Source] = field(default_factory=list)
+    refined_queries: Optional[SearchQuery] = None
 
     @property
     def total_count(self) -> int:
@@ -401,7 +406,7 @@ class SearchResults:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
-        return {
+        result = {
             "idea": self.idea.to_dict(),
             "queries": self.queries.to_dict(),
             "papers": [s.to_dict() for s in self.papers],
@@ -411,6 +416,9 @@ class SearchResults:
             "scholar_results": [s.to_dict() for s in self.scholar_results],
             "total_count": self.total_count,
         }
+        if self.refined_queries is not None:
+            result["refined_queries"] = self.refined_queries.to_dict()
+        return result
 
     def summary(self) -> str:
         """Get a summary of the search results"""
@@ -481,6 +489,9 @@ class SearchResults:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SearchResults":
+        refined_queries = None
+        if "refined_queries" in data and data["refined_queries"]:
+            refined_queries = SearchQuery.from_dict(data["refined_queries"])
         return cls(
             idea=Idea.from_dict(data.get("idea", {})),
             queries=SearchQuery.from_dict(data.get("queries", {})),
@@ -489,5 +500,6 @@ class SearchResults:
             kaggle_results=[Source.from_dict(s) for s in data.get("kaggle_results", [])],
             web_pages=[Source.from_dict(s) for s in data.get("web_pages", [])],
             scholar_results=[Source.from_dict(s) for s in data.get("scholar_results", [])],
+            refined_queries=refined_queries,
         )
 
