@@ -330,19 +330,21 @@ def rerank_articles_two_stage(
     """
     Two-stage article reranking function with optional LLM scoring.
     
-    Stage 1 (Embedding Retrieval):
+    Stage 1 (Embedding Retrieval, 粗排):
     - Uses bge-base-en-v1.5 model to generate embeddings for the core article and all articles
     - Adds query instruction prefix to the core article to improve retrieval effectiveness
-    - Computes cosine similarity and filters top-k candidate articles
+    - Computes cosine similarity and filters stage_1_topk = min(top_k * 2, len(article_list)) candidate articles
     
     Stage 2 (Reranker Reranking):
     - Uses bge-reranker-base model to precisely score candidate articles
     - Reranks candidate articles based on reranker scores
     
     Stage 3 (Optional LLM Scoring):
-    - Uses LLM to score relevance of top-k articles based on source type
+    - Uses LLM to score relevance of the stage-1 candidates based on source type
     - Normalizes LLM scores to 0-1 range by dividing by 10
     - Combines LLM scores with reranker scores: final_score = reranker_score * embedding_weight + llm_score * llm_weight
+    
+    Finally, only the top_k articles by final_score are returned.
     
     Query Design Notes:
     - Embedding stage: Query (core article) adds instruction prefix "Represent this sentence for searching relevant passages:"
@@ -352,7 +354,8 @@ def rerank_articles_two_stage(
     Args:
         core_article: Full research idea text (used as query), containing six parts: basic_idea, motivation, research_question, method, experimental_setting, and expected_results (if available)
         article_list: List of articles to be ranked
-        top_k: Number of candidate articles to filter in stage 1 (default: 20)
+        top_k: Number of articles in the final returned results (default: 20).
+               Stage 1 will select up to top_k * 2 candidates for coarse retrieval.
         embedding_model_name: Embedding model name (used if embedding_model is not provided)
         reranker_model_name: Reranker model name (used if reranker_model is not provided)
         source_type: Type of source ("papers", "web", or "github") for LLM scoring
@@ -366,6 +369,7 @@ def rerank_articles_two_stage(
     
     Returns:
         Ranked article list, each element is (article_content, embedding_similarity_score, final_score)
+        The list is sorted by final_score in descending order and truncated to at most top_k elements.
         If LLM scoring is enabled, final_score = reranker_score * embedding_weight + llm_score * llm_weight.
         Otherwise, final_score is the reranker_score.
     """
@@ -381,7 +385,7 @@ def rerank_articles_two_stage(
             reranker_model_name=reranker_model_name
         )
     
-    logger.info(f"Stage 1: Embedding retrieval (selecting top-{top_k} from {len(article_list)} articles)")
+    logger.info(f"Stage 1: Embedding retrieval (selecting up to {top_k * 2} candidates from {len(article_list)} articles)")
     
     # ========== Stage 1: Embedding Retrieval ==========
     
@@ -400,10 +404,10 @@ def rerank_articles_two_stage(
     # cosine_scores shape: [n_articles]
     cosine_scores = util.cos_sim(query_embedding, article_embeddings)[0]
     
-    # Get top-k candidate article indices and scores
-    # If number of articles is less than top_k, use all articles
-    actual_top_k = min(top_k, len(article_list))
-    top_k_indices = np.argsort(cosine_scores.cpu().numpy())[-actual_top_k:][::-1]
+    # Get stage-1 candidate article indices and scores
+    # Stage 1 粗排: 选出 stage_1_topk = min(top_k * 2, len(article_list)) 个资源
+    stage_1_topk = min(top_k * 2, len(article_list)) if top_k > 0 else len(article_list)
+    top_k_indices = np.argsort(cosine_scores.cpu().numpy())[-stage_1_topk:][::-1]
     top_k_articles = [article_list[i] for i in top_k_indices]
     top_k_scores = [float(cosine_scores[i]) for i in top_k_indices]
     
@@ -477,8 +481,12 @@ def rerank_articles_two_stage(
     # Sort by final score in descending order (higher score = higher relevance)
     results.sort(key=lambda x: x[2], reverse=True)
     
-    if reranker_scores:
-        logger.info(f"Reranking completed, final score range: {min(final_scores):.4f} - {max(final_scores):.4f}")
+    # 只返回最终分数前 top_k 个资源；若候选数量少于 top_k，则返回全部
+    if top_k > 0 and len(results) > top_k:
+        results = results[:top_k]
+    
+    if results:
+        logger.info(f"Reranking completed, final score range: {results[-1][2]:.4f} - {results[0][2]:.4f}")
     
     return results
 
