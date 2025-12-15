@@ -725,7 +725,7 @@ class RefineQuerySignature(dspy.Signature):
     what has not, then propose improved follow-up title queries that complement the current results.
 
     INPUTS:
-    - basic_idea: The original research idea.
+    - idea_full_text: The full research idea text containing six parts: basic_idea, motivation, research_question, method, experimental_setting, and expected_results (if available).
     - top_papers_info: JSON string with top papers, including for each paper its title, similarity_score,
       and the specific query that retrieved it:
         [{"title": "...", "similarity_score": 0.95, "query": "..."}, ...]
@@ -733,13 +733,13 @@ class RefineQuerySignature(dspy.Signature):
       and ineffective ones.
 
     INTERPRETATION OF QUERIES:
-    - Treat the queries that successfully retrieved the papers in top_papers_info as “good” queries:
-      they are reasonably well-aligned with the basic_idea and the actual literature.
-    - Treat the remaining queries in original_queries (that did not retrieve top papers) as “weak” or
-      “less useful” queries, because they are likely:
+    - Treat the queries that successfully retrieved the papers in top_papers_info as "good" queries:
+      they are reasonably well-aligned with the idea_full_text and the actual literature.
+    - Treat the remaining queries in original_queries (that did not retrieve top papers) as "weak" or
+      "less useful" queries, because they are likely:
         - too specific (overly detailed constraints that hurt recall),
         - too broad (introducing a lot of noise), or
-        - partially off-topic relative to the basic_idea.
+        - partially off-topic relative to the idea_full_text.
 
     ANALYSIS PROCESS:
     1. Analyze good queries and top paper titles:
@@ -753,7 +753,7 @@ class RefineQuerySignature(dspy.Signature):
        - Identify low-relevance or noisy keywords and avoid reusing them in new queries.
 
     3. Reflect on coverage and gaps:
-       - Determine which aspects of the basic_idea are already well-covered by the current top papers
+       - Determine which aspects of the idea_full_text are already well-covered by the current top papers
          (e.g., particular methods, datasets, problem settings).
        - Identify missing or under-explored perspectives, such as:
          alternative methods, related tasks, adjacent application domains, different terminology,
@@ -765,7 +765,7 @@ class RefineQuerySignature(dspy.Signature):
          drop unnecessary constraints, or replace them with slightly broader terms).
        - Avoid low-relevance or noisy keywords observed in weak queries.
        - Introduce alternative but clearly related terminology that might surface complementary or
-         previously missed papers, while remaining focused on the basic_idea.
+         previously missed papers, while remaining focused on the idea_full_text.
        - Aim for queries that extend the current search (new angles, related subproblems,
          complementary approaches) without drifting off-topic.
 
@@ -791,8 +791,8 @@ class RefineQuerySignature(dspy.Signature):
     - No parentheses, no NOT, no other fields, no extra text
     """
 
-    basic_idea = dspy.InputField(
-        desc="The original research idea that the search should stay focused on."
+    idea_full_text = dspy.InputField(
+        desc="The full research idea text containing six parts: basic_idea, motivation, research_question, method, experimental_setting, and expected_results (if available). The search should stay focused on this complete idea."
     )
     top_papers_info = dspy.InputField(
         desc='JSON string with top papers: [{"title": "...", "similarity_score": 0.95, "query": "..."}, ...]'
@@ -802,7 +802,7 @@ class RefineQuerySignature(dspy.Signature):
     )
     refined_queries = dspy.OutputField(
         desc=(
-            'Refined ArXiv title search queries derived from the basic idea and from analysis of which '
+            'Refined ArXiv title search queries derived from the idea_full_text and from analysis of which '
             'initial queries and retrieved papers worked well or poorly. The output MUST be a single '
             'bracketed, pipe-separated list like [ti:"..." AND ti:"..."|ti:"..." OR ti:"..."|...]. '
             'Each internal query uses 1–3 ti:"..." clauses combined only with AND and/or OR, and should '
@@ -838,7 +838,7 @@ class RefineGenerator(dspy.Module):
     
     def forward(
         self,
-        basic_idea: str,
+        idea_full_text: str,
         top_sources: List[Source],
         similarity_scores: List[float],
         source_queries: List[str],
@@ -848,7 +848,7 @@ class RefineGenerator(dspy.Module):
         Generate refined queries based on top-ranked sources.
         
         Args:
-            basic_idea: The original research idea
+            idea_full_text: The full research idea text containing six parts: basic_idea, motivation, research_question, method, experimental_setting, and expected_results (if available)
             top_sources: List of top-ranked Source objects
             similarity_scores: List of similarity scores corresponding to top_sources
             source_queries: List of queries that found each source (by query index)
@@ -873,7 +873,7 @@ class RefineGenerator(dspy.Module):
         
         with dspy.settings.context(lm=self.lm):
             result = self.generate_refined_queries(
-                basic_idea=basic_idea,
+                idea_full_text=idea_full_text,
                 top_papers_info=top_papers_info_str,
                 original_queries=original_queries_str
             )
@@ -898,10 +898,10 @@ class RefineGenerator(dspy.Module):
 
 class WebRefineSignature(dspy.Signature):
     """
-    You are a web-search query refinement strategist. You see (1) the basic_idea,
+    You are a web-search query refinement strategist. You see (1) the idea_full_text,
     (2) top-ranked web sources (each with title, summary/description, similarity_score,
     and the query that retrieved it), and (3) the full set of original_queries (good +
-    weak). Treat queries that retrieved the top sources as “good”; the rest are “weak”
+    weak). Treat queries that retrieved the top sources as "good"; the rest are "weak"
     and likely too broad, too narrow, or slightly off-topic.
 
     GOAL:
@@ -912,7 +912,7 @@ class WebRefineSignature(dspy.Signature):
 
     ANALYSIS PROCESS:
     1) Good queries + top source titles/summaries: extract recurring high-signal concepts,
-       phrasings, and synonyms that align with the basic_idea.
+       phrasings, and synonyms that align with the idea_full_text.
     2) Weak queries: spot over-specific fragments to generalize/remove, and noisy/low-
        relevance terms to avoid.
     3) Coverage check: note which aspects are already well-covered and which angles,
@@ -928,7 +928,7 @@ class WebRefineSignature(dspy.Signature):
     - Output EXACTLY as [query1|query2|...|queryN], 4 ≤ N ≤ 8, no extra text.
     """
 
-    basic_idea = dspy.InputField(desc="The original research idea text")
+    idea_full_text = dspy.InputField(desc="The full research idea text containing six parts: basic_idea, motivation, research_question, method, experimental_setting, and expected_results (if available)")
     top_sources = dspy.InputField(desc="JSON list of top web sources with title/summary/similarity_score/query")
     original_queries = dspy.InputField(desc="JSON list of original web queries")
 
@@ -954,7 +954,7 @@ class WebRefineGenerator(dspy.Module):
 
     def forward(
         self,
-        basic_idea: str,
+        idea_full_text: str,
         top_sources: List[Source],
         similarity_scores: List[float],
         source_queries: List[str],
@@ -976,7 +976,7 @@ class WebRefineGenerator(dspy.Module):
 
         with dspy.settings.context(lm=self.lm):
             result = self.generate_refined_web(
-                basic_idea=basic_idea,
+                idea_full_text=idea_full_text,
                 top_sources=top_sources_json,
                 original_queries=original_queries_json,
             )
@@ -994,10 +994,10 @@ class WebRefineGenerator(dspy.Module):
 
 class GithubRefineSignature(dspy.Signature):
     """
-    You are a GitHub search query refinement strategist. You see (1) the basic_idea,
+    You are a GitHub search query refinement strategist. You see (1) the idea_full_text,
     (2) top-ranked repositories (each with title, summary/description, similarity_score,
     and the query that retrieved it), and (3) the full set of original_queries (good +
-    weak). Treat queries that found the top repos as “good”; the rest are “weak” and need
+    weak). Treat queries that found the top repos as "good"; the rest are "weak" and need
     generalization or correction.
 
     GOAL:
@@ -1023,7 +1023,7 @@ class GithubRefineSignature(dspy.Signature):
     - Output EXACTLY as [query1|query2|...|queryN], 8 ≤ N ≤ 12, no extra text.
     """
 
-    basic_idea = dspy.InputField(desc="The original research idea text")
+    idea_full_text = dspy.InputField(desc="The full research idea text containing six parts: basic_idea, motivation, research_question, method, experimental_setting, and expected_results (if available)")
     top_sources = dspy.InputField(desc="JSON list of top GitHub sources with title/summary/similarity_score/query")
     original_queries = dspy.InputField(desc="JSON list of original GitHub queries")
 
@@ -1049,7 +1049,7 @@ class GithubRefineGenerator(dspy.Module):
 
     def forward(
         self,
-        basic_idea: str,
+        idea_full_text: str,
         top_sources: List[Source],
         similarity_scores: List[float],
         source_queries: List[str],
@@ -1071,7 +1071,7 @@ class GithubRefineGenerator(dspy.Module):
 
         with dspy.settings.context(lm=self.lm):
             result = self.generate_refined_github(
-                basic_idea=basic_idea,
+                idea_full_text=idea_full_text,
                 top_sources=top_sources_json,
                 original_queries=original_queries_json,
             )
@@ -1233,7 +1233,7 @@ class QueryGenerator:
     # ---- refine ---- #
     def refine_web_queries(
         self,
-        basic_idea: str,
+        idea_full_text: str,
         top_sources: List[Source],
         similarity_scores: List[float],
         source_queries: List[str],
@@ -1241,7 +1241,7 @@ class QueryGenerator:
     ) -> List[str]:
         try:
             return self.web_refiner(
-                basic_idea=basic_idea,
+                idea_full_text=idea_full_text,
                 top_sources=top_sources,
                 similarity_scores=similarity_scores,
                 source_queries=source_queries,
@@ -1253,7 +1253,7 @@ class QueryGenerator:
 
     def refine_paper_queries(
         self,
-        basic_idea: str,
+        idea_full_text: str,
         top_sources: List[Source],
         similarity_scores: List[float],
         source_queries: List[str],
@@ -1262,7 +1262,7 @@ class QueryGenerator:
         """Refine paper queries using top paper sources."""
         try:
             return self.paper_refiner(
-                basic_idea=basic_idea,
+                idea_full_text=idea_full_text,
                 top_sources=top_sources,
                 similarity_scores=similarity_scores,
                 source_queries=source_queries,
@@ -1274,7 +1274,7 @@ class QueryGenerator:
 
     def refine_github_queries(
         self,
-        basic_idea: str,
+        idea_full_text: str,
         top_sources: List[Source],
         similarity_scores: List[float],
         source_queries: List[str],
@@ -1282,7 +1282,7 @@ class QueryGenerator:
     ) -> List[str]:
         try:
             return self.github_refiner(
-                basic_idea=basic_idea,
+                idea_full_text=idea_full_text,
                 top_sources=top_sources,
                 similarity_scores=similarity_scores,
                 source_queries=source_queries,

@@ -85,7 +85,7 @@ class ExtractionAgent(BaseAgent):
         elif "url" in context and context["url"]:
             url = context["url"].strip()
             logger.info(f"ExtractionAgent: downloading paper via URL {url}")
-            temp_pdf_path = download_pdf(url, save_folder="downloaded_papers")
+            temp_pdf_path = download_pdf(url)
             if not temp_pdf_path or not os.path.exists(temp_pdf_path):
                 raise AgentExecutionError(f"Failed to download PDF for URL {url}")
             input_text = extract_text_from_pdf(temp_pdf_path)
@@ -94,7 +94,7 @@ class ExtractionAgent(BaseAgent):
         elif "doi" in context and context["doi"]:
             doi = context["doi"].strip()
             logger.info(f"ExtractionAgent: downloading paper via DOI {doi}")
-            temp_pdf_path = download_pdf_by_doi(doi, download_dir="downloaded_papers")
+            temp_pdf_path = download_pdf_by_doi(doi)
             if not temp_pdf_path or not os.path.exists(temp_pdf_path):
                 raise AgentExecutionError(f"Failed to download PDF for DOI {doi}")
             input_text = extract_text_from_pdf(temp_pdf_path)
@@ -107,7 +107,7 @@ class ExtractionAgent(BaseAgent):
             pdf_url = get_pdf_url(paper_id)
             if not pdf_url:
                 raise AgentExecutionError(f"No open-access PDF found for paper ID {paper_id}")
-            temp_pdf_path = download_pdf(pdf_url, save_folder="downloaded_papers")
+            temp_pdf_path = download_pdf(pdf_url)
             if not temp_pdf_path or not os.path.exists(temp_pdf_path):
                 raise AgentExecutionError("Failed to download open-access PDF.")
             input_text = extract_text_from_pdf(temp_pdf_path)
@@ -133,13 +133,6 @@ class ExtractionAgent(BaseAgent):
                 schema=schema,
                 temperature=self.temperature,
             )
-            # Cleanup temporary file
-            if temp_pdf_path and os.path.exists(temp_pdf_path):
-                try:
-                    os.remove(temp_pdf_path)
-                    logger.info(f"Deleted temporary file: {temp_pdf_path}")
-                except Exception as e:
-                    logger.warning(f"Could not delete temp file {temp_pdf_path}: {e}")
 
             # Print JSON for logging
             print("\n=== Extraction Results ===")

@@ -11,8 +11,6 @@ import os
 from typing import List, Optional, Tuple
 
 from .models import Source, SourceType, Platform
-from .timestamp import extract_date_from_raw_text, is_date_in_range
-from ..querygenv2.readpage import read_page
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +35,12 @@ class WebSearcher:
         
         logger.info(f"Initialized WebSearcher with max_results: {self.max_results}")
     
-    def search(self, queries: List[str], before: Optional[str] = None, after: Optional[str] = None) -> List[Tuple[Source, int]]:
+    def search(self, queries: List[str]) -> List[Tuple[Source, int]]:
         """
         Search the web using multiple queries.
         
         Args:
             queries: List of search queries
-            before: Optional date filter (not currently used in debug API)
-            after: Optional date filter (not currently used in debug API)
             
         Returns:
             List of (Source, query_index) tuples
@@ -58,7 +54,7 @@ class WebSearcher:
         for q_idx, query in enumerate(queries):
             logger.info(f"Searching web for query[{q_idx}]: {query}")
             try:
-                results = self._google_search_debug_api(query, before)
+                results = self._google_search_debug_api(query)
                 for src in results:
                     if src.metadata is None:
                         src.metadata = {}
@@ -73,60 +69,14 @@ class WebSearcher:
         unique_results = self._deduplicate(all_results)
         logger.info(f"Found {len(unique_results)} unique web results with indices")
         
-        # Enrich web pages with readpage text and extract timestamps
-        filtered_results = []
-        for web_page, q_idx in unique_results:
-            try:
-                page_data = read_page(web_page.url)
-                if isinstance(page_data, dict):
-                    # Extract raw text from the dict returned by read_page
-                    web_page.page_raw_text = page_data.get("raw", "")
-                    # Also store metadata if available
-                    if "md" in page_data and page_data["md"]:
-                        md = page_data["md"]
-                        if isinstance(md, dict):
-                            web_page.page_title = md.get("title")
-                            web_page.page_headings = md.get("headings", [])
-                            web_page.page_links = md.get("links", [])
-                else:
-                    web_page.page_raw_text = str(page_data) if page_data else ""
-                
-                # Extract date from raw text
-                extracted_date = extract_date_from_raw_text(web_page.page_raw_text)
-                if extracted_date:
-                    # Update metadata and timestamp
-                    if web_page.metadata:
-                        web_page.metadata["date"] = extracted_date
-                    else:
-                        web_page.metadata = {"date": extracted_date}
-                    web_page.timestamp = extracted_date
-                    logger.debug(f"Extracted date {extracted_date} from {web_page.url}")
-            except Exception as e:
-                logger.warning(f"Failed to read page for web page {web_page.url}: {e}")
-                web_page.page_raw_text = ""
-            
-            # Filter by date range if specified
-            if before or after:
-                date_str = web_page.timestamp or (web_page.metadata.get("date") if web_page.metadata else None)
-                if is_date_in_range(date_str, before=before, after=after):
-                    filtered_results.append((web_page, q_idx))
-                else:
-                    logger.debug(f"Filtered out web page {web_page.url} (date: {date_str}, range: {after} to {before})")
-            else:
-                filtered_results.append((web_page, q_idx))
-        
-        if before or after:
-            logger.info(f"Filtered to {len(filtered_results)} web pages within date range")
-        
-        return filtered_results
+        return unique_results
     
-    def _google_search_debug_api(self, query: str, before: Optional[str] = None) -> List[Source]:
+    def _google_search_debug_api(self, query: str) -> List[Source]:
         """
         Perform Google search using Serper API.
         
         Args:
             query: Search query
-            before: Optional date filter (not currently used)
             
         Returns:
             List of Source objects

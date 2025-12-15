@@ -11,10 +11,13 @@ from ..tools.searchersv2.web_searcher import WebSearcher
 from ..tools.searchersv2.github_searcher_web import GithubWebSearcher
 from ..tools.querygenv2.query_generator import QueryGenerator
 from ..tools.querygenv2.reranker import rerank_articles_two_stage
+from ..tools.querygenv2.readpage import read_page
+from sentence_transformers import SentenceTransformer, CrossEncoder
 from ..tools.enricher import (
     enrich_papers_with_extraction,
     enrich_web_with_reports,
-    enrich_code_with_reports,
+    enrich_code_with_rawtext,
+    enrich_code_with_repo,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,15 @@ class ResearchAgentV3(BaseAgent):
         self.paper_batch_size = config.get("paper_batch_size", 8)
         self.web_max_results = config.get("web_max_results", 3)
         self.github_max_results = config.get("github_max_results", 3)
+
+        # 加载 BGE 模型（全局单例，避免重复加载）
+        embedding_model_name = config.get("embedding_model_name", "BAAI/bge-base-en-v1.5")
+        reranker_model_name = config.get("reranker_model_name", "BAAI/bge-reranker-base")
+        frame = inspect.currentframe()
+        logger.info(f"[{self.__class__.__name__}.__init__:{frame.f_lineno}] Loading BGE models: {embedding_model_name} and {reranker_model_name}")
+        self.embedding_model = SentenceTransformer(embedding_model_name)
+        self.reranker_model = CrossEncoder(reranker_model_name)
+        logger.info(f"[{self.__class__.__name__}.__init__:{frame.f_lineno}] BGE models loaded successfully")
 
         self.query_generator = QueryGenerator()
 
@@ -79,6 +91,15 @@ class ResearchAgentV3(BaseAgent):
 
         idea_text = idea.get_full_text()
 
+        # 维护全局去重集合（基于 URL）
+        seen_paper_urls = set()
+        seen_web_urls = set()
+        seen_github_urls = set()
+        
+        # 维护全局富化集合（基于 URL），避免重复富化
+        enriched_web_urls = set()
+        enriched_github_urls = set()
+
         # 迭代循环 depth 次（当 enable_refine=True 且 depth>0 时）
         # 如果 depth=0，执行一次搜索但不迭代
         iterations = depth if depth > 0 else 1
@@ -91,36 +112,45 @@ class ResearchAgentV3(BaseAgent):
             else:
                 logger.info(f"[{self.__class__.__name__}.execute:{frame.f_lineno}] Single search (no iteration)")
 
-            # 2) 搜索（paper / web / github），使用 Q
-            new_papers, new_web_pages, new_github_repos = await self._run_search(idea, Q, params)
+            # 2) 搜索（paper / web / github），使用 Q，并进行全局去重和 read_page
+            new_papers, new_web_pages, new_github_repos = await self._run_search(
+                idea, Q, params, seen_paper_urls, seen_web_urls, seen_github_urls
+            )
 
-            # 3) 先富化 web，补充可供重排的描述信息
-            new_web_pages = await self._run_enrich_web(idea_text, new_web_pages, params)
-
-            # 4) 合并新的 sources 到历史 sources
+            # 3) 合并新的 sources 到历史 sources
             all_papers.extend(new_papers)
             all_web_pages.extend(new_web_pages)
             all_github_repos.extend(new_github_repos)
 
-            # 5) 对合并后的 sources 进行重排（基于富化后的描述）
+            # 4) 对合并后的 sources 进行重排
+            idea_full_text = idea.get_full_text()
             all_papers, all_web_pages, all_github_repos = await self._run_rerank(
-                idea.basic_idea or "", all_papers, all_web_pages, all_github_repos
+                idea_full_text, all_papers, all_web_pages, all_github_repos
             )
 
-            # 6) 对重排后的论文和代码结果做富化
-            all_papers, all_github_repos = await self._run_enrich_paper_and_code(
-                idea_text, all_papers, all_github_repos, params
-            )
+            # 5) 富化 web 和 code（基于 page_raw_text），为后续 refine 提供更丰富的描述信息
+            # 只对未富化的 sources 执行富化
+            all_web_pages = await self._run_enrich_web(idea_text, all_web_pages, params, enriched_web_urls)
+            all_github_repos = await self._run_enrich_code(idea_text, all_github_repos, params, enriched_github_urls)
 
-            # 7) 如果不是最后一轮且 enable_refine=True，进行 refine 生成新的查询
+            # 6) 如果不是最后一轮且 enable_refine=True，进行 refine 生成新的查询
             if is_refine_iteration and self.enable_refine:
                 Q = self._run_refine(idea, all_papers, all_web_pages, all_github_repos, Q)
                 self._log_refined_queries(Q)
 
-        # 8) 返回最终结果
+        # 8) 对最终的 topk 结果进行富化（paper 抽取和 code 仓库分析）
+        all_papers, all_github_repos = await self._run_enrich_paper_and_code_final(
+            idea_text, all_papers, all_github_repos, params
+        )
+
+        # 9) 返回最终结果
         refined_queries = SearchQuery()
         if self.enable_refine and depth > 0:
             refined_queries = Q
+
+        # 10) 获取future papers
+        future_papers = await self._get_future_papers(idea, initial_queries, params)
+        all_papers = all_papers + future_papers
 
         return SearchResults(
             idea=idea,
@@ -133,16 +163,93 @@ class ResearchAgentV3(BaseAgent):
             refined_queries=refined_queries,
         )
 
+
+    async def _get_future_papers(self, idea: Idea, initial_queries: SearchQuery, params: Dict[str, Any]) -> List[Source]:
+        """
+        获取future papers（时间戳 >= before 的论文）
+        
+        使用独立的搜索流程，与常规搜索保持独立：
+        - 使用独立的 seen_paper_urls 集合进行去重
+        - 使用 initial_queries.paper_queries 进行搜索
+        - 设置 after=before 来获取未来时间的论文
+        """
+        frame = inspect.currentframe()
+        logger.info(f"[{self.__class__.__name__}._get_future_papers:{frame.f_lineno}] Starting future papers search")
+        
+        # 1. 使用 initial_queries.paper_queries 进行搜索
+        seen_paper_urls = set()  # 独立的去重集合
+        # 创建只包含 paper_queries 的 SearchQuery 对象
+        Q = SearchQuery(paper_queries=initial_queries.paper_queries)
+        logger.info(f"[{self.__class__.__name__}._get_future_papers:{frame.f_lineno}] Starting search with {len(Q.paper_queries)} queries")
+        self._log_queries(Q)
+        
+        all_papers: List[Source] = []
+        before = params.get("before")
+        depth = params.get("depth", 0)
+        
+        if not before:
+            logger.warning(f"[{self.__class__.__name__}._get_future_papers:{frame.f_lineno}] No 'before' parameter provided, skipping future papers search")
+            return []
+        
+        # 迭代循环 depth 次
+        iterations = depth if depth > 0 else 1
+        for iteration in range(iterations):
+            is_last_iteration = (iteration == iterations - 1)
+            is_refine_iteration = (depth > 0 and not is_last_iteration)
+            frame = inspect.currentframe()
+            if depth > 0:
+                logger.info(f"[{self.__class__.__name__}._get_future_papers:{frame.f_lineno}] Iteration {iteration + 1}/{depth}")
+            else:
+                logger.info(f"[{self.__class__.__name__}._get_future_papers:{frame.f_lineno}] Single search (no iteration)")
+            
+            # 搜索：after=before 表示获取时间戳 >= before 的论文
+            paper_pairs = self.paper_searcher.search(
+                Q.paper_queries, 
+                basic_idea=idea.basic_idea or "", 
+                before=None, 
+                after=before
+            )
+            papers = [p for p, _ in paper_pairs if p.url and p.url not in seen_paper_urls]
+            for p in papers:
+                if p.url:
+                    seen_paper_urls.add(p.url)
+            all_papers.extend(papers)
+            
+            if not is_last_iteration:
+                # 2. 对 papers 进行重排
+                idea_full_text = idea.get_full_text()
+                all_papers, _, _ = await self._run_rerank(idea_full_text, all_papers, [], [])
+                # 3. 生成新的查询
+                if is_refine_iteration:
+                    Q = self._run_refine(idea, all_papers, [], [], Q)
+                    self._log_refined_queries(Q)
+        
+        # 4. 对 papers 进行富化
+        idea_text = idea.get_full_text()
+        all_papers, _ = await self._run_enrich_paper_and_code_final(idea_text, all_papers, [], params)
+        
+        frame = inspect.currentframe()
+        logger.info(f"[{self.__class__.__name__}._get_future_papers:{frame.f_lineno}] Completed future papers search: found {len(all_papers)} papers (after={before})")
+        self._log_sources("future_papers_search", all_papers)
+        
+        return all_papers
+
     async def _run_search(
-        self, idea: Idea, queries: SearchQuery, params: Dict[str, Any]
+        self, 
+        idea: Idea, 
+        queries: SearchQuery, 
+        params: Dict[str, Any],
+        seen_paper_urls: set,
+        seen_web_urls: set,
+        seen_github_urls: set,
     ) -> (List[Source], List[Source], List[Source]):
         frame = inspect.currentframe()
         logger.info(f"[{self.__class__.__name__}._run_search:{frame.f_lineno}] Starting search")
-        before = params.get("before")
-        after = params.get("after")
         title = params.get("title")
 
         # paper 返回 (Source, q_idx)
+        before = params.get("before")
+        after = params.get("after")
         paper_pairs = self.paper_searcher.search(
             queries.paper_queries, basic_idea=idea.basic_idea or "", before=before, after=after
         )
@@ -157,7 +264,6 @@ class ResearchAgentV3(BaseAgent):
 
         web_pairs = (
             self.web_searcher.search(queries.web_queries)
-            # self.web_searcher.search(queries.web_queries, before=before, after=after)
             if queries.web_queries
             else []
         )
@@ -185,6 +291,26 @@ class ResearchAgentV3(BaseAgent):
             papers = self._filter_by_title(papers, title)
             web_pages = self._filter_by_title(web_pages, title)
             github_repos = self._filter_by_title(github_repos, title)
+
+        # 全局去重：过滤掉之前迭代中已见过的结果
+        papers = [p for p in papers if p.url and p.url not in seen_paper_urls]
+        web_pages = [w for w in web_pages if w.url and w.url not in seen_web_urls]
+        github_repos = [g for g in github_repos if g.url and g.url not in seen_github_urls]
+
+        # 更新 seen 集合
+        for p in papers:
+            if p.url:
+                seen_paper_urls.add(p.url)
+        for w in web_pages:
+            if w.url:
+                seen_web_urls.add(w.url)
+        for g in github_repos:
+            if g.url:
+                seen_github_urls.add(g.url)
+
+        # 对 web 和 github 执行 read_page（在全局去重之后）
+        web_pages = await self._enrich_with_readpage(web_pages, "web")
+        github_repos = await self._enrich_with_readpage(github_repos, "github")
 
         self._log_sources("paper_search", papers)
         self._log_sources("web_search", web_pages)
@@ -255,62 +381,163 @@ class ResearchAgentV3(BaseAgent):
         
         return filtered_sources
 
+    async def _enrich_with_readpage(self, sources: List[Source], source_type: str) -> List[Source]:
+        """
+        对 sources 执行 read_page，填充 page_raw_text 和相关元数据。
+        
+        Args:
+            sources: 要富化的 Source 列表
+            source_type: 源类型（"web" 或 "github"）
+            
+        Returns:
+            富化后的 Source 列表
+        """
+        if not sources:
+            return sources
+        
+        frame = inspect.currentframe()
+        logger.info(
+            f"[{self.__class__.__name__}._enrich_with_readpage:{frame.f_lineno}] Starting read_page for {source_type} (count={len(sources)})"
+        )
+        
+        enriched_sources = []
+        for src in sources:
+            if not src.url:
+                enriched_sources.append(src)
+                continue
+            
+            try:
+                page_data = read_page(src.url)
+                if isinstance(page_data, dict):
+                    # Extract raw text from the dict returned by read_page
+                    src.page_raw_text = page_data.get("raw", "")
+                    # Also store metadata if available
+                    if "md" in page_data and page_data["md"]:
+                        md = page_data["md"]
+                        if isinstance(md, dict):
+                            src.page_title = md.get("title")
+                            src.page_headings = md.get("headings", [])
+                            src.page_links = md.get("links", [])
+                else:
+                    src.page_raw_text = str(page_data) if page_data else ""
+            except Exception as e:
+                logger.warning(f"Failed to read page for {source_type} {src.url}: {e}")
+                src.page_raw_text = ""
+            
+            enriched_sources.append(src)
+        
+        logger.info(
+            f"[{self.__class__.__name__}._enrich_with_readpage:{frame.f_lineno}] Completed read_page for {source_type}"
+        )
+        return enriched_sources
+
     async def _run_enrich_web(
         self,
         idea_text: str,
         web_pages: List[Source],
         params: Dict[str, Any],
+        enriched_web_urls: set,
     ):
         frame = inspect.currentframe()
+        # 过滤出未富化的 web_pages
+        to_enrich = [wp for wp in web_pages if wp.url and wp.url not in enriched_web_urls]
+        if not to_enrich:
+            logger.info(
+                f"[{self.__class__.__name__}._run_enrich_web:{frame.f_lineno}] All web pages already enriched (total={len(web_pages)})"
+            )
+            return web_pages
+        
         logger.info(
-            f"[{self.__class__.__name__}._run_enrich_web:{frame.f_lineno}] Starting enrich web (web={len(web_pages)})"
+            f"[{self.__class__.__name__}._run_enrich_web:{frame.f_lineno}] Starting enrich web (total={len(web_pages)}, to_enrich={len(to_enrich)})"
         )
         web_temp = params.get("web_temperature", self.temperature)
 
-        # web 报告
-        web_pages = await enrich_web_with_reports(self._call_model, idea_text, web_pages, web_temp)
-        self._log_enrich("web_enrich", web_pages, key="web_report")
+        # 只对未富化的 web_pages 执行富化
+        enriched_pages = await enrich_web_with_reports(self._call_model, idea_text, to_enrich, web_temp)
+        self._log_enrich("web_enrich", enriched_pages, key="web_report")
+        
+        # 更新 enriched_web_urls 集合
+        for wp in enriched_pages:
+            if wp.url:
+                enriched_web_urls.add(wp.url)
 
         return web_pages
 
-    async def _run_enrich_paper_and_code(
+    async def _run_enrich_code(
+        self,
+        idea_text: str,
+        github_repos: List[Source],
+        params: Dict[str, Any],
+        enriched_github_urls: set,
+    ):
+        frame = inspect.currentframe()
+        # 过滤出未富化的 github_repos
+        to_enrich = [gr for gr in github_repos if gr.url and gr.url not in enriched_github_urls]
+        if not to_enrich:
+            logger.info(
+                f"[{self.__class__.__name__}._run_enrich_code:{frame.f_lineno}] All github repos already enriched (total={len(github_repos)})"
+            )
+            return github_repos
+        
+        logger.info(
+            f"[{self.__class__.__name__}._run_enrich_code:{frame.f_lineno}] Starting enrich code (total={len(github_repos)}, to_enrich={len(to_enrich)})"
+        )
+        code_temp = params.get("code_temperature", self.temperature)
+
+        # 只对未富化的 github_repos 执行富化
+        enriched_repos = await enrich_code_with_rawtext(self._call_model, idea_text, to_enrich, code_temp)
+        self._log_enrich("code_enrich", enriched_repos, key="code_report")
+        
+        # 更新 enriched_github_urls 集合
+        for gr in enriched_repos:
+            if gr.url:
+                enriched_github_urls.add(gr.url)
+
+        return github_repos
+
+    async def _run_enrich_paper_and_code_final(
         self,
         idea_text: str,
         papers: List[Source],
         github_repos: List[Source],
         params: Dict[str, Any],
     ):
+        """
+        对最终的 topk 结果进行富化：
+        - papers: 使用 extraction_agent 抽取 PDF
+        - github_repos: 使用 enrich_code_with_repo 基于仓库上下文生成报告
+        """
         frame = inspect.currentframe()
         logger.info(
-            f"[{self.__class__.__name__}._run_enrich_paper_and_code:{frame.f_lineno}] Starting enrich paper/code (papers={len(papers)}, github={len(github_repos)})"
+            f"[{self.__class__.__name__}._run_enrich_paper_and_code_final:{frame.f_lineno}] Starting final enrich paper/code (papers={len(papers)}, github={len(github_repos)})"
         )
         code_temp = params.get("code_temperature", self.temperature)
 
         # paper 抽取
         papers = await enrich_papers_with_extraction(papers, self.extraction_agent)
-        self._log_enrich("paper_enrich", papers, key="paper_extract")
+        self._log_enrich("paper_enrich_final", papers, key="paper_extract")
 
-        # code 报告
-        github_repos = await enrich_code_with_reports(self._call_model, idea_text, github_repos, code_temp)
-        self._log_enrich("code_enrich", github_repos, key="code_report")
+        # code 报告（基于 repo_context/readme）
+        github_repos = await enrich_code_with_repo(self._call_model, idea_text, github_repos, code_temp)
+        self._log_enrich("code_enrich_final", github_repos, key="code_report")
 
         return papers, github_repos
 
     async def _run_rerank(
         self,
-        basic_idea: str,
+        idea_full_text: str,
         papers: List[Source],
         web_pages: List[Source],
         github_repos: List[Source],
     ):
         frame = inspect.currentframe()
-        logger.info(f"[{self.__class__.__name__}._run_rerank:{frame.f_lineno}] Starting rerank with basic_idea")
-        papers_ranked = self._rerank_single("papers", basic_idea, papers)
-        web_ranked = self._rerank_single("web", basic_idea, web_pages)
-        github_ranked = self._rerank_single("github", basic_idea, github_repos)
+        logger.info(f"[{self.__class__.__name__}._run_rerank:{frame.f_lineno}] Starting rerank with idea_full_text")
+        papers_ranked = self._rerank_single("papers", idea_full_text, papers)
+        web_ranked = self._rerank_single("web", idea_full_text, web_pages)
+        github_ranked = self._rerank_single("github", idea_full_text, github_repos)
         return papers_ranked, web_ranked, github_ranked
 
-    def _rerank_single(self, label: str, basic_idea: str, sources: List[Source]) -> List[Source]:
+    def _rerank_single(self, label: str, idea_full_text: str, sources: List[Source]) -> List[Source]:
         frame = inspect.currentframe()
         if not sources:
             logger.info(f"[{self.__class__.__name__}._rerank_single:{frame.f_lineno}] {label}: no sources to rerank")
@@ -322,7 +549,7 @@ class ResearchAgentV3(BaseAgent):
             if label == "papers":
                 text = src.description or src.title
             elif label in ["web", "github"]:
-                text = src.page_raw_text or src.description or src.title
+                text = src.description or src.page_raw_text or src.title
             else:
                 text = self._source_text(src)
                 if not text:
@@ -330,11 +557,16 @@ class ResearchAgentV3(BaseAgent):
             items.append((idx, src, f"[idx:{idx}] {text}"))
 
         article_list = [item[2] for item in items]
+        
         try:
             reranked = rerank_articles_two_stage(
-                core_article=basic_idea,
+                core_article=idea_full_text,
                 article_list=article_list,
                 top_k=self.top_k,
+                source_type=label,
+                enable_llm_scoring=True,
+                embedding_model=self.embedding_model,
+                reranker_model=self.reranker_model,
             )
         except Exception as e:
             logger.warning(f"[{self.__class__.__name__}._rerank_single:{frame.f_lineno}] Rerank failed: {e}")
@@ -367,13 +599,14 @@ class ResearchAgentV3(BaseAgent):
     ) -> SearchQuery:
         refined = SearchQuery()
 
+        idea_full_text = idea.get_full_text()
         paper_scored = self._collect_scored_sources(papers)
         if paper_scored and queries.paper_queries:
             top_sources = [s for _, s in paper_scored]
             similarity_scores = [float(score) for score, _ in paper_scored]
             source_queries = [s.metadata.get("query", "") if s.metadata else "" for s in top_sources]
             refined.paper_queries = self.query_generator.refine_paper_queries(
-                basic_idea=idea.basic_idea,
+                idea_full_text=idea_full_text,
                 top_sources=top_sources,
                 similarity_scores=similarity_scores,
                 source_queries=source_queries,
@@ -386,7 +619,7 @@ class ResearchAgentV3(BaseAgent):
             similarity_scores = [float(score) for score, _ in web_scored]
             source_queries = [s.metadata.get("query", "") if s.metadata else "" for s in top_sources]
             refined.web_queries = self.query_generator.refine_web_queries(
-                basic_idea=idea.basic_idea,
+                idea_full_text=idea_full_text,
                 top_sources=top_sources,
                 similarity_scores=similarity_scores,
                 source_queries=source_queries,
@@ -399,7 +632,7 @@ class ResearchAgentV3(BaseAgent):
             similarity_scores = [float(score) for score, _ in github_scored]
             source_queries = [s.metadata.get("query", "") if s.metadata else "" for s in top_sources]
             refined.github_queries = self.query_generator.refine_github_queries(
-                basic_idea=idea.basic_idea,
+                idea_full_text=idea_full_text,
                 top_sources=top_sources,
                 similarity_scores=similarity_scores,
                 source_queries=source_queries,

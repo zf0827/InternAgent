@@ -32,6 +32,13 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+# 全局存储目录：InternAgent/saved/downloaded_papers
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+SAVED_DIR = PROJECT_ROOT / "saved"
+PDF_SAVE_DIR = SAVED_DIR / "downloaded_papers"
+SAVED_DIR.mkdir(parents=True, exist_ok=True)
+PDF_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
 # Define the paper search endpoint URL
 search_url = 'https://api.semanticscholar.org/graph/v1/paper/search/'
 graph_url = 'https://api.semanticscholar.org/graph/v1/paper/'
@@ -824,18 +831,25 @@ def dedup_paper_bank(sorted_paper_bank):
     return deduped_paper_bank
 
 
-def download_pdf(pdf_url, save_folder="pdfs"):
+def download_pdf(pdf_url, save_folder: str | Path = PDF_SAVE_DIR):
     logger.info(f"downloading pdf from {pdf_url}")
     
     if not pdf_url:
         return None
     
-    os.makedirs(save_folder, exist_ok=True)
+    save_dir = Path(save_folder)
+    save_dir.mkdir(parents=True, exist_ok=True)
     
     file_name = pdf_url.split("/")[-1]
     if not file_name.endswith('.pdf'):
         file_name = file_name + '.pdf'
-    save_path = os.path.join(save_folder, file_name)
+    save_path = save_dir / file_name
+
+    # 如果已存在，直接复用
+    if save_path.exists():
+        logger.info(f"PDF already exists, reuse cached file: {save_path}")
+        return str(save_path)
+
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36",
     }
@@ -895,7 +909,7 @@ def download_pdf_pubmed(url, save_folder="pdfs"):
         return None
     
     
-def download_pdf_by_doi(doi: str, download_dir: str = "downloaded_papers"):
+def download_pdf_by_doi(doi: str, download_dir: str | Path = PDF_SAVE_DIR):
 
     doi = doi.strip()
     if doi.lower().startswith('doi:'):
@@ -932,11 +946,17 @@ def download_pdf_by_doi(doi: str, download_dir: str = "downloaded_papers"):
         pdf_response = requests.get(pdf_url, headers=headers, stream=True)
         if pdf_response.status_code == 200 and 'application/pdf' in pdf_response.headers.get('Content-Type', ''):
             # 创建下载目录
-            os.makedirs(download_dir, exist_ok=True)
+            download_path = Path(download_dir)
+            download_path.mkdir(parents=True, exist_ok=True)
             
             # 自动生成文件名（仅使用 DOI）
             filename = f"{doi.replace('/', '_')}.pdf"
-            filepath = os.path.join(download_dir, filename)
+            filepath = download_path / filename
+
+            # 如果已存在同名文件，直接返回
+            if filepath.exists():
+                logger.info(f"PDF already exists for DOI, reuse cached file: {filepath}")
+                return str(filepath)
             
             # 保存 PDF 文件
             with open(filepath, 'wb') as f:
@@ -945,7 +965,7 @@ def download_pdf_by_doi(doi: str, download_dir: str = "downloaded_papers"):
                         f.write(chunk)
             
             print(f"PDF已下载到: {filepath}")
-            return filepath
+            return str(filepath)
         else:
             print("下载失败：无法获取有效的 PDF 文件。")
     else:

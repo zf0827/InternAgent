@@ -226,16 +226,17 @@ class ReportAgentV2(BaseAgent):
         return {
             "type": "object",
             "properties": {
-                "reason": {"type": "string", "description": "综合所有审稿人的总体理由"},
+                "reason": {"type": "string", "description": "Overall rationale synthesizing all reviewers' evaluations"},
                 "score": {
-                    "type": "integer",
-                    "enum": [1, 3, 5, 6, 8, 10],
-                    "description": "ICLR 六档打分，仅允许 1/3/5/6/8/10",
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 10,
+                    "description": "Final score on a continuous scale from 0 to 10 (decimals allowed). The score should align with the decision category based on ICLR2025 statistics.",
                 },
                 "decision": {
                     "type": "string",
                     "enum": ["reject", "poster", "spotlight", "oral"],
-                    "description": "最终接收类型",
+                    "description": "Final acceptance decision type",
                 },
             },
             "required": ["reason", "score", "decision"],
@@ -265,12 +266,30 @@ class ReportAgentV2(BaseAgent):
 10 (Strong Accept): Excellent novelty/impact, sound methodology, convincing experiments, very clear
 """.strip()
 
-        decision_ratio = (
-            "Heuristic target share (non-binding): reject >50%, poster ~30-40%, spotlight ~8-12%, oral ~1-3%."
-        )
+        decision_stats = """
+ICLR2025 Review Statistics (for reference):
+- reject: 42.17% of submissions, average score 4.77, standard deviation 0.92
+- poster: 25.65% of submissions, average score 6.23, standard deviation 0.50
+- spotlight: 3.26% of submissions, average score 7.35, standard deviation 0.26
+- oral: 1.82% of submissions, average score 7.79, standard deviation 0.55
+
+These statistics reflect the actual distribution and scoring patterns from ICLR2025. Use them as guidance to ensure your scoring aligns with realistic review standards.
+""".strip()
 
         return f"""
-You are an ICLR-style meta-reviewer. Synthesize all reviewers' 5-dimension scores (clarity, novelty, validity, feasibility, significance) and reasons to produce the final decision.
+You are an ICLR-style meta-reviewer conducting a rigorous peer review. This is a critical evaluation task that requires strict standards to maintain fairness and integrity of the review process.
+
+=== Critical Review Guidelines ===
+1. **Adopt a critical perspective**: Approach this review with a skeptical and analytical mindset. Scrutinize the work carefully and identify weaknesses, limitations, and potential issues.
+2. **Maintain strict standards**: This is a peer review process, not a generous evaluation. Being overly lenient undermines the fairness and rigor of the entire review system. Only award high scores when the work genuinely merits them.
+3. **Consider ICLR2025 statistics**: The following distribution and scoring patterns from ICLR2025 should inform your evaluation:
+{decision_stats}
+4. **Score alignment**: Your final score (0-10, decimals allowed) should logically align with your decision category. For example:
+   - reject decisions typically correspond to scores around 4.77 ± 0.92
+   - poster decisions typically correspond to scores around 6.23 ± 0.50
+   - spotlight decisions typically correspond to scores around 7.35 ± 0.26
+   - oral decisions typically correspond to scores around 7.79 ± 0.55
+   Ensure your score reflects the quality level implied by your decision.
 
 === Research Idea ===
 {idea_text}
@@ -278,7 +297,7 @@ You are an ICLR-style meta-reviewer. Synthesize all reviewers' 5-dimension score
 === Reviewer Evaluations (verbatim) ===
 {chr(10).join(eval_summaries)}
 
-=== ICLR Overall Rating Scale ===
+=== ICLR Overall Rating Scale (Reference) ===
 {iclr_scale}
 
 === Decision Types ===
@@ -286,18 +305,18 @@ You are an ICLR-style meta-reviewer. Synthesize all reviewers' 5-dimension score
 - poster: accepted (regular)
 - spotlight: accepted (notable)
 - oral: accepted (rare, top tier)
-{decision_ratio}
 
 === Requirements ===
 - Use ONLY the provided reviewer evidence; do not invent new facts.
 - Aggregate consensus and highlight divergences; call out any outlier scores.
-- Weigh all five dimensions; justify trade-offs explicitly.
-- Ensure rating ∈ {{1,3,5,6,8,10}} and decision aligns logically with rating and rationale.
-- If evidence is insufficient, be conservative.
-- Tone: concise, professional, decision-focused.
+- Weigh all five dimensions (clarity, novelty, validity, feasibility, significance); justify trade-offs explicitly.
+- Score on a continuous 0-10 scale (decimals allowed). The score must align with your decision category based on the ICLR2025 statistics provided above.
+- If evidence is insufficient or quality is questionable, be conservative and err on the side of lower scores.
+- Maintain critical standards: avoid being overly generous. Remember that most submissions receive reject or poster decisions.
+- Tone: concise, professional, decision-focused, and appropriately critical.
 
 === Output Format ===
-Return pure JSON (no code fences) conforming to the schema: reason, score, decision.
+Return pure JSON (no code fences) conforming to the schema: reason, score (0-10, decimals allowed), decision.
 """
 
     async def _generate_final_decision(
@@ -308,7 +327,7 @@ Return pure JSON (no code fences) conforming to the schema: reason, score, decis
         try:
             resp = await self._call_model(
                 prompt=prompt,
-                system_prompt="You are an experienced ICLR meta-reviewer. 输出必须是纯 JSON。",
+                system_prompt="You are an experienced ICLR meta-reviewer. Output must be pure JSON only.",
                 schema=schema,
                 temperature=params.get("temperature", self.temperature),
             )

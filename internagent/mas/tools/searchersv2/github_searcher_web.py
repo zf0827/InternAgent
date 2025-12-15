@@ -11,7 +11,6 @@ import os
 from typing import List, Tuple
 
 from .models import Source, SourceType, Platform
-from ..querygenv2.readpage import read_page
 
 logger = logging.getLogger(__name__)
 
@@ -69,30 +68,7 @@ class GithubWebSearcher:
         unique_results = self._deduplicate(all_results)
         logger.info(f"Found {len(unique_results)} unique GitHub web results with indices")
 
-        # Enrich GitHub repos with readpage text
-        enriched_results = []
-        for repo, q_idx in unique_results:
-            try:
-                page_data = read_page(repo.url)
-                if isinstance(page_data, dict):
-                    # Extract raw text from the dict returned by read_page
-                    repo.page_raw_text = page_data.get("raw", "")
-                    # Also store metadata if available
-                    if "md" in page_data and page_data["md"]:
-                        md = page_data["md"]
-                        if isinstance(md, dict):
-                            repo.page_title = md.get("title")
-                            repo.page_headings = md.get("headings", [])
-                            repo.page_links = md.get("links", [])
-                else:
-                    repo.page_raw_text = str(page_data) if page_data else ""
-            except Exception as e:
-                logger.warning(f"Failed to read page for GitHub repo {repo.url}: {e}")
-                repo.page_raw_text = ""
-            
-            enriched_results.append((repo, q_idx))
-
-        return enriched_results
+        return unique_results
 
     def _google_search_debug_api(self, query: str) -> List[Source]:
         """

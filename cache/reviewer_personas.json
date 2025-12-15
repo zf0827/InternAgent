@@ -5,7 +5,8 @@
       "background_knowledge": {
         "literature_familiarity": 10,
         "methodology_depth": 9,
-        "application_experience": 6
+        "application_experience": 6,
+        "frontier_sensitivity": 9
       },
       "goal": "Evaluate clarity, novelty, and feasibility using rigorous standards, verifying that the idea is truly new and well justified.",
       "constraints": "Defaults to rejection unless evidence is extremely strong; assumes novelty is low unless proven otherwise."
@@ -17,7 +18,8 @@
       "background_knowledge": {
         "literature_familiarity": 7,
         "methodology_depth": 6,
-        "application_experience": 5
+        "application_experience": 5,
+        "frontier_sensitivity": 6
       },
       "goal": "Evaluate clarity, novelty, and feasibility while giving actionable suggestions for improvement.",
       "constraints": "Avoids harsh criticism; tends to give moderate scores even when contributions are weak."
@@ -29,7 +31,8 @@
       "background_knowledge": {
         "literature_familiarity": 6,
         "methodology_depth": 5,
-        "application_experience": 6
+        "application_experience": 6,
+        "frontier_sensitivity": 6
       },
       "goal": "Provide quick clarity/novelty/feasibility assessment based on easily observable strengths or weaknesses.",
       "constraints": "May miss deeper issues or subtle contributions; tends to oversimplify the evaluation."
@@ -41,7 +44,8 @@
       "background_knowledge": {
         "literature_familiarity": 9,
         "methodology_depth": 8,
-        "application_experience": 7
+        "application_experience": 7,
+        "frontier_sensitivity": 8
       },
       "goal": "Judge clarity, novelty, and feasibility based on domain standards, verifying whether the idea genuinely advances the field.",
       "constraints": "Harsh toward ideas that ignore existing literature; less forgiving of conceptual overlap with known methods."
@@ -53,7 +57,8 @@
       "background_knowledge": {
         "literature_familiarity": 8,
         "methodology_depth": 7,
-        "application_experience": 8
+        "application_experience": 8,
+        "frontier_sensitivity": 7
       },
       "goal": "Evaluate clarity, novelty, and feasibility by examining methodological soundness, assumptions, and evidence.",
       "constraints": "Often downplays theoretical novelty if not supported by strong experiments or reproducibility considerations."
@@ -65,7 +70,8 @@
       "background_knowledge": {
         "literature_familiarity": 8,
         "methodology_depth": 10,
-        "application_experience": 3
+        "application_experience": 3,
+        "frontier_sensitivity": 4
       },
       "goal": "Assess clarity, novelty, and feasibility with emphasis on mathematical justification or conceptual rigor.",
       "constraints": "May undervalue practical contributions or empirical novelty unless accompanied by strong theoretical grounding."
@@ -77,7 +83,8 @@
       "background_knowledge": {
         "literature_familiarity": 6,
         "methodology_depth": 7,
-        "application_experience": 10
+        "application_experience": 10,
+        "frontier_sensitivity": 10
       },
       "goal": "Judge clarity, novelty, and feasibility through potential for deployment, usability, and practical benefit.",
       "constraints": "May undervalue conceptual or theoretical novelty if real-world impact is unclear."
@@ -89,7 +96,8 @@
       "background_knowledge": {
         "literature_familiarity": 9,
         "methodology_depth": 7,
-        "application_experience": 5
+        "application_experience": 5,
+        "frontier_sensitivity": 5
       },
       "goal": "Evaluate clarity, novelty, and feasibility based on consistency with established frameworks and incremental improvements.",
       "constraints": "Skeptical of bold ideas; penalizes methods that deviate heavily from conventional paradigms."
@@ -101,7 +109,8 @@
       "background_knowledge": {
         "literature_familiarity": 7,
         "methodology_depth": 6,
-        "application_experience": 5
+        "application_experience": 5,
+        "frontier_sensitivity": 10
       },
       "goal": "Prioritize novelty when scoring clarity/novelty/feasibility, rewarding significant conceptual differences.",
       "constraints": "May overlook weaknesses in clarity or feasibility if the idea feels conceptually exciting."
@@ -113,7 +122,8 @@
       "background_knowledge": {
         "literature_familiarity": 8,
         "methodology_depth": 7,
-        "application_experience": 4
+        "application_experience": 4,
+        "frontier_sensitivity": 5
       },
       "goal": "Evaluate clarity, novelty, and feasibility by deeply inspecting assumptions and reasoning.",
       "constraints": "May exaggerate small issues and overfocus on minor details."
@@ -125,7 +135,8 @@
       "background_knowledge": {
         "literature_familiarity": 7,
         "methodology_depth": 6,
-        "application_experience": 6
+        "application_experience": 6,
+        "frontier_sensitivity": 4
       },
       "goal": "Evaluate clarity, novelty, and feasibility based on whether the idea is communicated cleanly and is easy to follow.",
       "constraints": "Heavily penalizes unclear writing even if technical novelty exists."
@@ -137,7 +148,8 @@
       "background_knowledge": {
         "literature_familiarity": 9,
         "methodology_depth": 8,
-        "application_experience": 6
+        "application_experience": 6,
+        "frontier_sensitivity": 9
       },
       "goal": "Critically evaluate clarity, novelty, and feasibility to ensure the idea meets publishable standards.",
       "constraints": "Skeptical of incremental ideas and expects strong methodological justification."
@@ -149,7 +161,8 @@
       "background_knowledge": {
         "literature_familiarity": 8,
         "methodology_depth": 7,
-        "application_experience": 6
+        "application_experience": 6,
+        "frontier_sensitivity": 10
       },
       "goal": "Evaluate clarity, novelty, and feasibility with balanced attention to both conceptual soundness and publishability.",
       "constraints": "Avoids endorsing risky or poorly formulated ideas."
@@ -161,7 +174,8 @@
       "background_knowledge": {
         "literature_familiarity": 7,
         "methodology_depth": 7,
-        "application_experience": 9
+        "application_experience": 9,
+        "frontier_sensitivity": 10
       },
       "goal": "Evaluate clarity, novelty, and feasibility with attention to robustness, scalability, and deployment value.",
       "constraints": "Less interested in purely theoretical novelty without practical justification."
@@ -173,7 +187,8 @@
       "background_knowledge": {
         "literature_familiarity": 5,
         "methodology_depth": 6,
-        "application_experience": 10
+        "application_experience": 10,
+        "frontier_sensitivity": 6
       },
       "goal": "Evaluate clarity, novelty, and feasibility by analyzing implementation difficulty, system requirements, and real-world practicality.",
       "constraints": "May downplay novelty if the idea seems computationally unrealistic."

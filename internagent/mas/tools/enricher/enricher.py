@@ -8,8 +8,6 @@
 
 import logging
 import os
-import shutil
-import tempfile
 from typing import Callable, Dict, List, Tuple, Any
 
 from ..searchersv2.models import Source, SourceType, Platform
@@ -39,7 +37,16 @@ def _build_web_descriptions(sources: List[Source]) -> List[Tuple[Source, str]]:
     return pairs
 
 
-def _build_code_descriptions(sources: List[Source]) -> List[Tuple[Source, str]]:
+def _build_code_descriptions_rawtext(sources: List[Source]) -> List[Tuple[Source, str]]:
+    pairs: List[Tuple[Source, str]] = []
+    for idx, src in enumerate(sources, 1):
+        if src.source_type == SourceType.CODE and src.page_raw_text:
+            desc = f"Source{idx}:\nCode raw text:\n{src.page_raw_text}\n"
+            pairs.append((src, desc))
+    return pairs
+
+
+def _build_code_descriptions_context(sources: List[Source]) -> List[Tuple[Source, str]]:
     pairs: List[Tuple[Source, str]] = []
     for idx, src in enumerate(sources, 1):
         has_context = bool(src.repo_context)
@@ -207,6 +214,80 @@ Output MUST be pure JSON only, without any code block markers like ```json or ``
 """
 
 
+def _build_code_prompt_context(idea_text: str, description: str, idx: int) -> str:
+    return f"""
+You are an expert research analyst. Your task is to analyze a SINGLE code resource and generate:
+1. A concise summary (5-6 sentences)
+2. A detailed report_content that comprehensively describes the raw code resource itself
+
+Research Context:
+{idea_text}
+
+Code Resource Content:
+{description}
+
+=== SUMMARY REQUIREMENTS ===
+- Provide a concise 5-6 sentence summary
+- Focus on the code resource itself - what it offers, its architecture, and technical specifications
+
+=== REPORT_CONTENT REQUIREMENTS ===
+Provide a detailed Markdown-formatted analysis that comprehensively describes ONLY the raw code resource. Structure your analysis with these EXACT sections:
+
+## Useful Components
+- Tools, modules, models applicable to the idea
+- List available components with brief descriptions
+- Note pre-trained models or datasets if present
+- Mention utility scripts or helper functions
+
+## Repository Structure Analysis
+- File tree examination and architectural assessment
+- Overview of directory organization
+- Key files and their purposes
+- Architecture patterns and design principles
+
+## Typical Pipelines
+- Common workflows that can inform implementation
+- Data processing sequences
+- Training and evaluation procedures
+- Deployment or serving workflows
+
+## Integration Strategy & Considerations
+- How to utilize this resource, including obstacles
+- Setup and installation requirements
+- API interfaces and usage patterns
+- Configuration options and parameters
+- Potential integration challenges
+
+## Limitations & Risks
+- Constraints, missing components, compatibility issues
+- Technical limitations or performance boundaries
+- Missing features or incomplete implementations
+- Compatibility requirements and dependencies
+- Maintenance status and documentation quality
+
+=== FORMATTING REQUIREMENTS ===
+- Utilize EXACTLY the section headers shown above (## Useful Components, ## Repository Structure Analysis, etc.)
+- Utilize bullet points for all details within each section
+- Utilize consistent Markdown formatting throughout
+- Include technical specifics and concrete details
+- Maintain professional, technical tone
+
+=== RESTRICTIONS ===
+- DO NOT analyze relevance to the research idea
+- DO NOT compare with other repositories
+- DO NOT suggest improvements or modifications
+- DO NOT incorporate external technical knowledge
+- Focus EXCLUSIVELY on describing what is present in the raw code resource
+
+=== OUTPUT FORMAT ===
+Output MUST be pure JSON only, without any code block markers like ```json or ```, strictly matching this schema:
+{{
+"summary": "A concise 5-6 sentence overview of the code resource itself, focusing on the raw technical details",
+"report_content": "Detailed Markdown-formatted analysis with EXACT sections: Useful Components, Repository Structure Analysis, Typical Pipelines, Integration Strategy & Considerations, Limitations & Risks"
+}}
+"""
+
+
 # --------------------------- Enrichers --------------------------- #
 
 async def enrich_papers_with_extraction(
@@ -283,58 +364,20 @@ async def enrich_web_with_reports(
     return web_pages
 
 
-async def enrich_code_with_reports(
+async def enrich_code_with_rawtext(
     call_model_fn: Callable[..., Any],
     idea_text: str,
     code_items: List[Source],
     temperature: float = 0.7,
 ) -> List[Source]:
     """
-    基于 repo_context/readme 生成摘要与报告，写入 metadata.code_report。
+    基于页面原文生成摘要与报告，写入 metadata.code_report。
     """
     if not code_items:
         return []
 
-    # 附加 repo context 与 README
-    if SimplePipeline is None:
-        logger.warning("SimplePipeline not available. Skipping repo context/README attachment.")
-    else:
-        temp_dir = tempfile.mkdtemp(prefix="github_repos_")
-        logger.info(f"Created temporary directory for repo enrichment: {temp_dir}")
-        try:
-            for src in code_items:
-                # 仅对 GitHub 仓库执行
-                if src.platform != Platform.GITHUB:
-                    continue
-
-                try:
-                    repo_path = SimplePipeline.download_github_repo(src.url, temp_dir)
-                    if repo_path and os.path.exists(repo_path):
-                        pipeline = SimplePipeline(repo_path)
-                        try:
-                            src.repo_context = pipeline.get_context(max_tokens=8000, format="string")
-                        except Exception as e:
-                            logger.warning(f"[code_enrich] build context failed for {src.url}: {e}")
-                            src.repo_context = src.repo_context or None
-
-                        try:
-                            src.repo_readme = pipeline.get_readme()
-                        except Exception as e:
-                            logger.warning(f"[code_enrich] read README failed for {src.url}: {e}")
-                            src.repo_readme = src.repo_readme or None
-                    else:
-                        logger.warning(f"[code_enrich] failed to download repo: {src.url}")
-                except Exception as e:
-                    logger.error(f"[code_enrich] error while processing repo {src.url}: {e}", exc_info=True)
-        finally:
-            try:
-                shutil.rmtree(temp_dir)
-                logger.info(f"Cleaned up temporary directory: {temp_dir}")
-            except Exception as e:
-                logger.warning(f"Failed to remove temporary directory {temp_dir}: {e}")
-
     schema = _build_output_schema()
-    pairs = _build_code_descriptions(code_items)
+    pairs = _build_code_descriptions_rawtext(code_items)
     if not pairs:
         return code_items
 
@@ -357,9 +400,75 @@ async def enrich_code_with_reports(
     return code_items
 
 
+async def enrich_code_with_repo(
+    call_model_fn: Callable[..., Any],
+    idea_text: str,
+    code_items: List[Source],
+    temperature: float = 0.7,
+) -> List[Source]:
+    """
+    基于 repo_context/readme 生成摘要与报告，写入 metadata.code_report。
+    """
+    if not code_items:
+        return []
+
+    # 附加 repo context 与 README
+    if SimplePipeline is None:
+        logger.warning("SimplePipeline not available. Skipping repo context/README attachment.")
+    else:
+        for src in code_items:
+            # 仅对 GitHub 仓库执行
+            if src.platform != Platform.GITHUB:
+                continue
+
+            try:
+                repo_path = SimplePipeline.download_github_repo(src.url)
+                if repo_path and os.path.exists(repo_path):
+                    pipeline = SimplePipeline(repo_path)
+                    try:
+                        src.repo_context = pipeline.get_context(max_tokens=8000, format="string")
+                    except Exception as e:
+                        logger.warning(f"[code_enrich] build context failed for {src.url}: {e}")
+                        src.repo_context = src.repo_context or None
+
+                    try:
+                        src.repo_readme = pipeline.get_readme()
+                    except Exception as e:
+                        logger.warning(f"[code_enrich] read README failed for {src.url}: {e}")
+                        src.repo_readme = src.repo_readme or None
+                else:
+                    logger.warning(f"[code_enrich] failed to download repo: {src.url}")
+            except Exception as e:
+                logger.error(f"[code_enrich] error while processing repo {src.url}: {e}", exc_info=True)
+
+    schema = _build_output_schema()
+    pairs = _build_code_descriptions_context(code_items)
+    if not pairs:
+        return code_items
+
+    for idx, (src, desc) in enumerate(pairs, 1):
+        prompt = _build_code_prompt_context(idea_text, desc, idx)
+        try:
+            report = await call_model_fn(
+                prompt=prompt,
+                system_prompt="You are an expert research analyst for code repositories.",
+                schema=schema,
+                temperature=temperature,
+            )
+            _ensure_metadata(src)["code_report"] = report
+            if isinstance(report, dict):
+                summary = report.get("summary")
+                if summary:
+                    src.description = summary
+        except Exception as e:
+            logger.warning(f"[code_enrich] #{idx} report failed: {e}")
+    return code_items
+
+
 __all__ = [
     "enrich_papers_with_extraction",
     "enrich_web_with_reports",
-    "enrich_code_with_reports",
+    "enrich_code_with_rawtext",
+    "enrich_code_with_repo",
 ]
 

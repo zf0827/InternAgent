@@ -352,16 +352,16 @@ class EvaluationAgentV2(BaseAgent):
         # Extract background_knowledge ratios
         lit_ratio = 1.0
         meth_ratio = 1.0
-        app_ratio = 1.0
+        frontier_ratio = 1.0
         
         if persona and persona.get("background_knowledge"):
             bg_knowledge = persona.get("background_knowledge", {})
             lit_score = bg_knowledge.get("literature_familiarity", 10)
             meth_score = bg_knowledge.get("methodology_depth", 10)
-            app_score = bg_knowledge.get("application_experience", 10)
+            frontier_score = bg_knowledge.get("frontier_sensitivity", 10)
             lit_ratio = max(0.0, min(1.0, lit_score / 10.0))
             meth_ratio = max(0.0, min(1.0, meth_score / 10.0))
-            app_ratio = max(0.0, min(1.0, app_score / 10.0))
+            frontier_ratio = max(0.0, min(1.0, frontier_score / 10.0))
         
         context_parts = []
         
@@ -389,11 +389,15 @@ class EvaluationAgentV2(BaseAgent):
                     continue
                 
                 # Apply filtering based on report type
-                if report_type in ["paper_report", "web_report"]:
+                if report_type == "paper_report":
+                    # Use literature_familiarity for paper reports
                     filtered_reports = EvaluationAgentV2._filter_reports_by_ratio(reports, lit_ratio)
                 elif report_type == "code_report":
                     # Use methodology_depth for code reports
                     filtered_reports = EvaluationAgentV2._filter_reports_by_ratio(reports, meth_ratio)
+                elif report_type == "web_report":
+                    # Use frontier_sensitivity for web reports
+                    filtered_reports = EvaluationAgentV2._filter_reports_by_ratio(reports, frontier_ratio)
                 else:
                     filtered_reports = reports
                 
@@ -437,12 +441,12 @@ class EvaluationAgentV2(BaseAgent):
         if background_knowledge:
             lit = background_knowledge.get("literature_familiarity", "N/A")
             meth = background_knowledge.get("methodology_depth", "N/A")
-            app = background_knowledge.get("application_experience", "N/A")
+            frontier = background_knowledge.get("frontier_sensitivity", "N/A")
             persona_section += f"Background Knowledge:\n"
-            persona_section += f"  - Literature Familiarity: {lit}/10\n"
-            persona_section += f"  - Methodology Depth: {meth}/10\n"
-            persona_section += f"  - Application Experience: {app}/10\n\n"
-            persona_section += "Note: Based on the background knowledge scores above, the research reports provided below have been randomly filtered to reflect the reviewer's knowledge level. Lower scores result in fewer reports being shown.\n\n"
+            persona_section += f"  - Literature Familiarity: {lit}/10 (controls paper reports)\n"
+            persona_section += f"  - Methodology Depth: {meth}/10 (controls code reports)\n"
+            persona_section += f"  - Frontier Sensitivity: {frontier}/10 (controls web reports)\n\n"
+            persona_section += "Note: Based on the background knowledge scores above, the research reports provided below have been randomly filtered to reflect the reviewer's knowledge level. Lower scores result in fewer reports being shown. Paper reports are filtered by literature familiarity, code reports by methodology depth, and web reports by frontier sensitivity.\n\n"
         if goal:
             persona_section += f"Goal: {goal}\n\n"
         if constraints:
@@ -523,10 +527,26 @@ Based on your knowledge and the provided research reports, evaluate the idea fro
 
 4. **Structure and Organization**: Is the content well-structured and easy to follow? Are all components (motivation, research question, method, experimental setting, expected results) clearly defined and coherent?
 
+=== Scoring Guidelines ===
+As a peer reviewer, you must maintain strict and fair evaluation standards:
+
+1. **Critical Perspective**: Approach this evaluation with a critical eye. Scrutinize the idea thoroughly and identify any weaknesses, gaps, or areas that need improvement. Do not be overly lenient.
+
+2. **Review Standards**: This is a peer review process. Maintaining fairness and rigor is essential. Being overly generous undermines the integrity of the review process and does not serve the research community.
+
+3. **Score Distribution**: Based on statistical constraints, approximately only 30% of submissions should receive a passing score (>=7.0). When assigning scores, consider this distribution. Reserve scores of 7.0 or higher for ideas that truly demonstrate excellence. Most ideas should receive scores below 7.0.
+
+**Clarity Scoring Scale** (evaluate title/abstract quality, clarity, conciseness, and structure):
+   - Score 8-10: Exceptional clarity - title and abstract perfectly summarize the paper, content is exceptionally clear and concise, structure is exemplary with all components well-defined and coherent (exceedingly rare, reserve for truly outstanding cases)
+   - Score 6-7: Good clarity - title and abstract effectively summarize the paper, content is generally clear and well-structured, most components are well-defined (use conservatively, only when clarity is genuinely strong)
+   - Score 4-5: Moderate clarity - title and abstract provide basic summary but lack precision, content has some clarity issues or structural weaknesses, some components need improvement (more common - use when clarity is adequate but not strong)
+   - Score 2-3: Poor clarity - title and abstract are vague or misaligned, content is unclear or poorly organized, significant structural issues or missing components (common - use when clarity problems are evident)
+   - Score 0-1: Very poor clarity - title and abstract fail to convey the idea, content is confusing or incoherent, severe structural problems or major missing components
+
 === Output Requirements ===
 Provide a score from 0 to 10 and a detailed reason explaining your evaluation.
 
-Focus on evidence-based evaluation using both your knowledge and the provided reports."""
+Focus on evidence-based evaluation using both your knowledge and the provided reports. Apply strict standards and justify your score accordingly."""
         
         async def evaluate(self, idea_text: str, idea_parts: Dict[str, str],
                           grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
@@ -618,9 +638,25 @@ Based on the provided research reports describing related work, evaluate the nov
 
 4. **Alignment with Research Trends**: How does it align with or diverge from current research trends? Does it follow existing trends or chart new directions?
 
+=== Scoring Guidelines ===
+As a peer reviewer, you must maintain strict and fair evaluation standards:
+
+1. **Critical Perspective**: Approach this evaluation with a critical eye. Scrutinize the idea thoroughly and identify any weaknesses, gaps, or areas that need improvement. Do not be overly lenient.
+
+2. **Review Standards**: This is a peer review process. Maintaining fairness and rigor is essential. Being overly generous undermines the integrity of the review process and does not serve the research community.
+
+3. **Score Distribution**: Based on statistical constraints, approximately only 30% of submissions should receive a passing score (>=7.0). When assigning scores, consider this distribution. Reserve scores of 7.0 or higher for ideas that truly demonstrate excellence. Most ideas should receive scores below 7.0.
+
+**Novelty Scoring Scale** (evaluate new problems/perspectives, new techniques, advancement over existing methods, and alignment with trends):
+   - Score 8-10: Exceptional novelty - introduces genuinely new problems or perspectives not explored before, proposes substantially new techniques with significant advancement, represents major departure from existing methods (exceedingly rare, reserve for truly groundbreaking cases)
+   - Score 6-7: Good novelty - introduces new angles or perspectives, proposes meaningful improvements or new techniques, shows clear advancement over existing methods (use conservatively, only when novelty is genuinely strong)
+   - Score 4-5: Moderate novelty - introduces some new aspects but with significant overlap with existing work, proposes incremental improvements, shows limited advancement over existing methods (more common - use when novelty exists but is limited)
+   - Score 2-3: Low novelty - largely follows existing problems/perspectives, minor variations of existing techniques, minimal advancement over existing methods (common - use when novelty is weak)
+   - Score 0-1: No novelty - completely overlaps with existing work, no new problems/perspectives or techniques, essentially replicates existing methods
+
 === Output Requirements ===
 Provide a score from 0 to 10 and a detailed reason explaining your evaluation.
-Focus on identifying specific similarities and differences with the related work described in the reports, and assess whether the idea introduces genuinely new problems, perspectives, or techniques."""
+Focus on identifying specific similarities and differences with the related work described in the reports, and assess whether the idea introduces genuinely new problems, perspectives, or techniques. Apply strict standards and justify your score accordingly."""
         
         async def evaluate(self, idea_parts: Dict[str, str],
                           grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
@@ -719,13 +755,29 @@ Based on the provided research reports and code repositories, evaluate the feasi
 
 5. **Implementation Feasibility** (if applicable): Can the idea's methodology be implemented using available code repositories? Are there relevant modules, functions, or components that can be leveraged?
 
+=== Scoring Guidelines ===
+As a peer reviewer, you must maintain strict and fair evaluation standards:
+
+1. **Critical Perspective**: Approach this evaluation with a critical eye. Scrutinize the idea thoroughly and identify any weaknesses, gaps, or areas that need improvement. Do not be overly lenient.
+
+2. **Review Standards**: This is a peer review process. Maintaining fairness and rigor is essential. Being overly generous undermines the integrity of the review process and does not serve the research community.
+
+3. **Score Distribution**: Based on statistical constraints, approximately only 30% of submissions should receive a passing score (>=7.0). When assigning scores, consider this distribution. Reserve scores of 7.0 or higher for ideas that truly demonstrate excellence. Most ideas should receive scores below 7.0.
+
+**Feasibility Scoring Scale** (evaluate research design clarity, methodology robustness, result analysis quality, and implementation feasibility):
+   - Score 8-10: Exceptional feasibility - research design is exceptionally clear and well-justified, methodology is highly robust and perfectly suited to research questions, result analysis plan is thorough and appropriate, implementation is clearly feasible with available resources (exceedingly rare, reserve for truly outstanding cases)
+   - Score 6-7: Good feasibility - research design is clear and justified, methodology is robust and appropriate, result analysis plan is adequate, implementation appears feasible (use conservatively, only when feasibility is genuinely strong)
+   - Score 4-5: Moderate feasibility - research design has some clarity issues or gaps, methodology has some weaknesses or may not fully address research questions, result analysis plan needs improvement, implementation has some concerns (more common - use when feasibility is adequate but not strong)
+   - Score 2-3: Poor feasibility - research design is unclear or poorly justified, methodology has significant weaknesses or is inappropriate, result analysis plan is inadequate, implementation faces major challenges (common - use when feasibility problems are evident)
+   - Score 0-1: Very poor feasibility - research design is severely flawed or missing, methodology is fundamentally unsound or inappropriate, result analysis plan is missing or inadequate, implementation is not feasible
+
 === Output Requirements ===
 Provide:
 1. A score from 0 to 10 indicating feasibility
 2. A detailed reason explaining your assessment
 3. Pseudocode or an implementation plan (if applicable) showing how to integrate the available code repositories to implement the idea's methodology
 
-Focus on evaluating the research design, methodology quality, and result analysis rather than just implementation feasibility."""
+Focus on evaluating the research design, methodology quality, and result analysis rather than just implementation feasibility. Apply strict standards and justify your score accordingly."""
         
         async def evaluate(self, idea_text: str, idea_parts: Dict[str, str],
                           grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
@@ -819,10 +871,26 @@ Based on your knowledge and the provided research reports, evaluate the validity
 
 5. **Addressing Research Problem**: Do the theoretical foundations, algorithms, and methodologies effectively address the research problem? Is there a clear connection between the problem and the proposed solution?
 
+=== Scoring Guidelines ===
+As a peer reviewer, you must maintain strict and fair evaluation standards:
+
+1. **Critical Perspective**: Approach this evaluation with a critical eye. Scrutinize the idea thoroughly and identify any weaknesses, gaps, or areas that need improvement. Do not be overly lenient.
+
+2. **Review Standards**: This is a peer review process. Maintaining fairness and rigor is essential. Being overly generous undermines the integrity of the review process and does not serve the research community.
+
+3. **Score Distribution**: Based on statistical constraints, approximately only 30% of submissions should receive a passing score (>=7.0). When assigning scores, consider this distribution. Reserve scores of 7.0 or higher for ideas that truly demonstrate excellence. Most ideas should receive scores below 7.0.
+
+**Validity Scoring Scale** (evaluate theoretical foundations, algorithm robustness, methodology detail, and logical consistency):
+   - Score 8-10: Exceptional validity - solid and well-established theoretical foundations, highly robust and theoretically sound algorithms, detailed and comprehensive methodologies, perfect logical consistency throughout (exceedingly rare, reserve for truly outstanding cases)
+   - Score 6-7: Good validity - sound theoretical foundations, robust and well-designed algorithms, adequate methodology detail, generally logically consistent (use conservatively, only when validity is genuinely strong)
+   - Score 4-5: Moderate validity - theoretical foundations have some gaps or weaknesses, algorithms have some robustness concerns, methodology lacks sufficient detail, some logical inconsistencies (more common - use when validity is adequate but not strong)
+   - Score 2-3: Poor validity - weak or missing theoretical foundations, algorithms have significant robustness issues, methodology lacks critical details, notable logical inconsistencies (common - use when validity problems are evident)
+   - Score 0-1: Very poor validity - severely flawed or missing theoretical foundations, algorithms are fundamentally unsound, methodology is severely lacking, major logical inconsistencies or contradictions
+
 === Output Requirements ===
 Provide a score from 0 to 10 and a detailed reason explaining your evaluation.
 
-Focus on evidence-based evaluation using both your knowledge and the provided reports. Assess the rigor and validity of the theoretical and methodological foundations."""
+Focus on evidence-based evaluation using both your knowledge and the provided reports. Assess the rigor and validity of the theoretical and methodological foundations. Apply strict standards and justify your score accordingly."""
         
         async def evaluate(self, idea_text: str, idea_parts: Dict[str, str],
                           grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],
@@ -915,10 +983,26 @@ Based on the provided research reports describing related work, evaluate the sig
 
 5. **Long-term Significance**: What is the long-term significance? Could this idea lead to further research directions or practical applications?
 
+=== Scoring Guidelines ===
+As a peer reviewer, you must maintain strict and fair evaluation standards:
+
+1. **Critical Perspective**: Approach this evaluation with a critical eye. Scrutinize the idea thoroughly and identify any weaknesses, gaps, or areas that need improvement. Do not be overly lenient.
+
+2. **Review Standards**: This is a peer review process. Maintaining fairness and rigor is essential. Being overly generous undermines the integrity of the review process and does not serve the research community.
+
+3. **Score Distribution**: Based on statistical constraints, approximately only 30% of submissions should receive a passing score (>=7.0). When assigning scores, consider this distribution. Reserve scores of 7.0 or higher for ideas that truly demonstrate excellence. Most ideas should receive scores below 7.0.
+
+**Significance Scoring Scale** (evaluate potential contribution, impact on domain and beyond, comparison with existing works, and long-term significance):
+   - Score 8-10: Exceptional significance - offers transformative insights or solutions, has profound impact potential in domain and beyond, represents major advancement over existing works, has strong potential for long-term influence and further research directions (exceedingly rare, reserve for truly groundbreaking cases)
+   - Score 6-7: Good significance - offers meaningful contributions and insights, has substantial impact potential in domain with some broader implications, represents clear advancement over existing works, has potential for further research (use conservatively, only when significance is genuinely strong)
+   - Score 4-5: Moderate significance - offers some contributions but limited in scope, has moderate impact potential primarily within domain, represents incremental improvement over existing works, limited long-term potential (more common - use when significance exists but is limited)
+   - Score 2-3: Low significance - offers minimal contributions, has limited impact potential even within domain, represents minor improvement or comparable to existing works, little long-term potential (common - use when significance is weak)
+   - Score 0-1: No significance - offers no meaningful contributions, has negligible impact potential, does not advance beyond existing works, no long-term potential
+
 === Output Requirements ===
 Provide a score from 0 to 10 and a detailed reason explaining your evaluation.
 
-Focus on assessing the potential contribution and impact, considering both the immediate domain and broader research community. Compare with existing works to contextualize the significance."""
+Focus on assessing the potential contribution and impact, considering both the immediate domain and broader research community. Compare with existing works to contextualize the significance. Apply strict standards and justify your score accordingly."""
         
         async def evaluate(self, idea_parts: Dict[str, str],
                           grounding_results: Dict[str, Dict[str, List[Dict[str, Any]]]],

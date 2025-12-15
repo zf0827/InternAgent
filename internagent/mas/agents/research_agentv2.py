@@ -9,8 +9,6 @@ import asyncio
 import os
 import json
 import dspy
-import shutil
-import tempfile
 from typing import Dict, Any, Optional, List, Tuple
 
 from .base_agent import BaseAgent, AgentExecutionError
@@ -88,35 +86,23 @@ class ResearchAgentV2(BaseAgent):
         
         # Enrich GitHub repos with SimplePipeline context
         if SimplePipeline is not None:
-            # Create a temporary directory for downloading repos
-            temp_dir = tempfile.mkdtemp(prefix="github_repos_")
-            logger.info(f"Created temporary directory for GitHub repos: {temp_dir}")
-            
-            try:
-                for github_repo in results.github_repos:
-                    try:
-                        # Download the repository using SimplePipeline's static method
-                        repo_path = SimplePipeline.download_github_repo(github_repo.url, temp_dir)
-                        if repo_path and os.path.exists(repo_path):
-                            # Use SimplePipeline to generate context
-                            logger.info(f"Generating context for repository: {github_repo.url}")
-                            pipeline = SimplePipeline(repo_path)
-                            context = pipeline.get_context(max_tokens=8000, format='string')
-                            github_repo.repo_context = context
-                            logger.info(f"Successfully generated context for {github_repo.url}")
-                        else:
-                            logger.warning(f"Failed to download repository: {github_repo.url}")
-                            github_repo.repo_context = None
-                    except Exception as e:
-                        logger.error(f"Failed to generate context for repository {github_repo.url}: {e}", exc_info=True)
-                        github_repo.repo_context = None
-            finally:
-                # Clean up temporary directory
+            for github_repo in results.github_repos:
                 try:
-                    shutil.rmtree(temp_dir)
-                    logger.info(f"Cleaned up temporary directory: {temp_dir}")
+                    # Download the repository using SimplePipeline's static method
+                    repo_path = SimplePipeline.download_github_repo(github_repo.url)
+                    if repo_path and os.path.exists(repo_path):
+                        # Use SimplePipeline to generate context
+                        logger.info(f"Generating context for repository: {github_repo.url}")
+                        pipeline = SimplePipeline(repo_path)
+                        context = pipeline.get_context(max_tokens=8000, format='string')
+                        github_repo.repo_context = context
+                        logger.info(f"Successfully generated context for {github_repo.url}")
+                    else:
+                        logger.warning(f"Failed to download repository: {github_repo.url}")
+                        github_repo.repo_context = None
                 except Exception as e:
-                    logger.warning(f"Failed to clean up temporary directory {temp_dir}: {e}")
+                    logger.error(f"Failed to generate context for repository {github_repo.url}: {e}", exc_info=True)
+                    github_repo.repo_context = None
         else:
             logger.warning("SimplePipeline not available. Skipping GitHub repo context generation.")
             for github_repo in results.github_repos:

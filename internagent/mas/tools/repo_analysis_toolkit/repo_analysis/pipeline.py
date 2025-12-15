@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
 from typing import Dict, List, Optional, Callable
 from pathlib import Path
@@ -20,6 +19,13 @@ from .context_builder import ContextBuilder
 from .task_matcher import TaskMatcher, create_task_dict
 
 logger = logging.getLogger(__name__)
+
+# 全局存储目录：InternAgent/saved/downloaded_repos
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+SAVED_DIR = PROJECT_ROOT / "saved"
+REPO_SAVE_DIR = SAVED_DIR / "downloaded_repos"
+SAVED_DIR.mkdir(parents=True, exist_ok=True)
+REPO_SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class RepoContextPipeline:
@@ -413,17 +419,22 @@ class SimplePipeline:
         return git_url
     
     @staticmethod
-    def download_github_repo(repo_url: str, target_dir: str) -> Optional[str]:
+    def download_github_repo(repo_url: str, target_dir: Optional[str] = None) -> Optional[str]:
         """
-        Download GitHub repository to a target directory.
+        Download GitHub repository to a target directory. If the repo already
+        exists (by repo_name) under the target directory, reuse it directly.
         
         Args:
             repo_url: GitHub repository URL (can be in various formats)
-            target_dir: Target directory for cloning
+            target_dir: Target directory for cloning. Defaults to the global
+                        cached path `saved/downloaded_repos`.
             
         Returns:
             Local path to the cloned repository, or None if download fails
         """
+        base_dir = Path(target_dir) if target_dir else REPO_SAVE_DIR
+        base_dir.mkdir(parents=True, exist_ok=True)
+        
         # Extract the base GitHub repository URL
         git_url = SimplePipeline._extract_github_repo_url(repo_url)
         if git_url is None:
@@ -432,29 +443,26 @@ class SimplePipeline:
         
         # Extract repo name for local path
         repo_name = git_url.split('/')[-1].replace('.git', '')
-        local_path = os.path.join(target_dir, repo_name)
+        local_path = base_dir / repo_name
         
-        # Remove existing directory if it exists
-        if os.path.exists(local_path):
-            try:
-                shutil.rmtree(local_path)
-            except Exception as e:
-                logger.warning(f"Failed to remove existing directory {local_path}: {e}")
-                return None
+        # 如果已存在，直接复用
+        if local_path.exists():
+            logger.info(f"Repository already exists, reuse cached path: {local_path}")
+            return str(local_path)
         
         logger.info(f"Downloading GitHub repository from {git_url} to {local_path}")
         
         try:
             # Clone repository with depth=1 for faster download
             result = subprocess.run(
-                ['git', 'clone', '--depth', '1', git_url, local_path],
+                ['git', 'clone', '--depth', '1', git_url, str(local_path)],
                 capture_output=True,
                 text=True,
                 check=True,
                 timeout=300  # 5 minute timeout
             )
             logger.info(f"Successfully downloaded repository to {local_path}")
-            return local_path
+            return str(local_path)
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to clone repository: {e.stderr}")
             return None
