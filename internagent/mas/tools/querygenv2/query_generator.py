@@ -643,28 +643,71 @@ class OptimizedWebQueryGenerator(dspy.Module):
 
 class OptimizedGitHubQuerySignature(dspy.Signature):
     """
-    You generate Google Search API queries that surface GitHub repositories with runnable code for the given research idea.
+    You generate the **first-round Google Search API queries** that surface GitHub repositories
+    with runnable code for a given research idea.
 
-    Goals and scope:
-    - Find actual implementation repos (not lists/collections) that match the idea.
-    - Cover all three buckets: (A) similar research implementations/pipelines, (B) frameworks/toolkits enabling the methodology, (C) baselines/benchmarks/datasets from the experimental_setting.
-    - Prefer repos with real code, setup instructions, and recent activity (2024–2025).
-    
-    Mandatory filters:
-    - Always target GitHub with `site:github.com`.
-    - Exclude non-code collections: -awesome -survey -paper -list -collection.
-    
-    Query design:
-    - Produce 8–12 concise queries separated by "|" and wrapped in a single bracketed list: [query1|query2|...|queryk].
-    - Each query focuses on one angle (task/method, framework/toolkit, or specific benchmark/dataset) derived from basic_idea, methodology, and experimental_setting.
-    - Use clear keywords and optional alternatives (via OR) for methods, tasks, datasets, or frameworks; avoid redundant queries.
-    - Favor patterns like:
-      - "[core task or method] site:github.com -awesome -survey -paper -list -collection"
-      - "[methodology/toolkit] framework site:github.com -awesome -survey -paper -list -collection"
-      - "[benchmark or dataset] benchmark site:github.com -awesome -survey -paper -list -collection"
-    - One benchmark/baseline per query; keep queries short and ready for Google Search.
-    
-    Output only the bracketed, pipe-separated queries string—no extra text.
+    ====================== OVERALL GOAL ======================
+    - Find **actual implementation repositories** (with real code and runnable pipelines),
+      not collections or reading lists.
+    - Explicitly cover **three complementary categories (A/B/C)**:
+      A. Similar or closely related research implementations / complete pipelines
+      B. General or domain-specific frameworks / toolkits that can support the methodology
+      C. Baselines / benchmarks / datasets and their code implementations from the experimental_setting
+
+    ====================== MANDATORY FILTERING (HARD CONSTRAINTS) ======================
+    - All queries MUST target GitHub: always include `site:github.com`.
+    - Systematically EXCLUDE non-code collections and paper lists by default:
+      - Use negative filters: `-awesome -survey -paper -list -collection`.
+      - Conceptually discard:
+        - "awesome" style collections
+        - survey / review / literature list repos
+        - curated paper collections or "papers-with-code" style lists without real code.
+
+    ====================== SEARCH STRATEGY FOR INITIAL ROUND ======================
+    Think of the initial queries as covering **multiple aspects** of the idea:
+
+    - Category A (implementations / pipelines):
+      - Focus on the core problem or task and typical solution pipelines.
+      - Each query should try to surface **complete codebases** that actually implement the task.
+
+    - Category B (frameworks / toolkits):
+      - Focus on training / inference / orchestration frameworks that can realize the methodology.
+      - Cover both general-purpose and more specialized toolkits when appropriate.
+
+    - Category C (baselines / benchmarks / datasets):
+      - Focus on benchmarks, datasets, and baseline methods that appear in the experimental_setting.
+      - Each query should concentrate on **one benchmark or one baseline family at a time**.
+
+    ====================== QUERY DESIGN PRINCIPLES ======================
+    - Produce **8–12** concise queries, separated by "|" and wrapped in a single bracketed list:
+      [query1|query2|...|queryk].
+    - **One query = one clear angle** (A/B/C):
+      - Do NOT mix too many different tasks / methods / benchmarks in one query.
+      - Avoid adding too many keywords or constraints into a single query.
+    - Use short, high-signal phrases for:
+      - core problems / tasks
+      - main methodological families
+      - key benchmarks / datasets / baselines from experimental_setting.
+    - When necessary, you may use OR for a **small number of close variants**, but:
+      - keep each query short and readable,
+      - avoid long chains of OR that mix many unrelated concepts.
+
+    ====================== SUGGESTED PATTERN TEMPLATES  ======================
+    - "[core task or problem] site:github.com -awesome -survey -paper -list -collection"
+    - "[method family or training approach] site:github.com -awesome -survey -paper -list -collection"
+    - "[framework/toolkit type] framework site:github.com -awesome -survey -paper -list -collection"
+    - "[benchmark or dataset name] site:github.com -awesome -survey -paper -list -collection"
+    - "[baseline method family] site:github.com -awesome -survey -paper -list -collection"
+
+    Dont use too many keywords in one search query. Focus on ONE benckmark / baseline AT ONE TIME and ONLY use its name as keyword.
+
+    ====================== OUTPUT FORMAT (STRICT) ======================
+    - Return **only** a single bracketed, pipe-separated list string:
+      [query1|query2|...|queryk]
+    - 8 ≤ k ≤ 12.
+    - Each query MUST include `site:github.com` and the negative filters
+      `-awesome -survey -paper -list -collection`.
+    - No extra commentary, markdown, or natural language outside the bracket.
     """
     basic_idea = dspy.InputField(desc="The core basic idea of the research - main concept and innovation")
     methodology = dspy.InputField(desc="Proposed methodology and approach - how the problem will be solved")
@@ -672,11 +715,12 @@ class OptimizedGitHubQuerySignature(dspy.Signature):
     
     new_github_queries = dspy.OutputField(
         desc=(
-            "Return only a single bracketed, pipe-separated list of 8–12 Google Search queries "
-            "targeting GitHub code repos that fit categories A/B/C: [query1|query2|...|queryk]. "
-            "Each query must include site:github.com and the negative filters "
-            "-awesome -survey -paper -list -collection, stay concise, and focus on one angle "
-            "(method/task, enabling framework/toolkit, or benchmark/dataset from experimental_setting). "
+            "Return ONLY a single bracketed, pipe-separated list of 8–12 Google Search queries "
+            "for the FIRST ROUND GitHub search: [query1|query2|...|queryk]. "
+            "Each query must: (1) include site:github.com, (2) include the filters "
+            "-awesome -survey -paper -list -collection, (3) stay concise, and (4) focus on exactly "
+            "one angle among A/B/C (implementations, frameworks/toolkits, or baselines/benchmarks). "
+            "Avoid long chains of mixed concepts; keep each query short and targeted. "
             "No additional text or formatting beyond the bracketed list."
         )
     )
@@ -994,33 +1038,62 @@ class WebRefineGenerator(dspy.Module):
 
 class GithubRefineSignature(dspy.Signature):
     """
-    You are a GitHub search query refinement strategist. You see (1) the idea_full_text,
-    (2) top-ranked repositories (each with title, summary/description, similarity_score,
-    and the query that retrieved it), and (3) the full set of original_queries (good +
-    weak). Treat queries that found the top repos as "good"; the rest are "weak" and need
-    generalization or correction.
+    You are a **GitHub search query refinement strategist** for the SECOND ROUND of search.
+    You see:
+      (1) idea_full_text: the complete research idea (including basic_idea, methodology,
+          experimental_setting, etc.),
+      (2) top-ranked repositories (each with title, description, similarity_score,
+          and the query that retrieved it),
+      (3) original_queries: all first-round GitHub queries (both effective and weak).
 
-    GOAL:
-    Propose 8–12 sharper Google Search queries that directly target GitHub repositories
-    with runnable code for the idea. Cover three buckets: (A) similar research
-    implementations/pipelines, (B) frameworks/toolkits enabling the methodology, (C)
-    baselines/benchmarks/datasets from the experimental setting.
+    ====================== INTERPRETATION OF INPUTS ======================
+    - Treat queries that retrieved the current top-k repositories as **good** signals:
+      - they roughly match the actual literature and implementation landscape.
+    - Treat the remaining queries as **weak**:
+      - often too narrow, too detailed, or noisy relative to the idea_full_text.
 
-    ANALYSIS PROCESS:
-    1) Mine good queries + top repo titles/descriptions to identify strong task/method/
-       dataset signals and common phrasings.
-    2) Inspect weak queries to find over-specific fragments to broaden and noisy/off-topic
-       terms to drop.
-    3) Check coverage gaps across A/B/C buckets; add adjacent terminology or variants
-       that stay relevant.
-    4) Craft refined queries that extend recall without drifting off-topic; keep them
-       short and non-redundant.
+    ====================== GOALS OF REFINEMENT ======================
+    1. Check **coverage of the three categories A/B/C** using current top-k repos:
+       - A: similar implementations / complete pipelines
+       - B: frameworks / toolkits supporting the methodology
+       - C: baselines / benchmarks / datasets and their implementations.
+    2. Check **quality criteria** of the current top-k repos:
+       - stars and maintenance recency,
+       - presence of real code (not just markdown),
+       - documentation and reproducibility signals,
+       - explicit alignment with the experimental_setting when possible.
+    3. If certain categories (A/B/C) or quality aspects are under-covered:
+       - Design **more general, less constrained follow-up queries** that:
+         - broaden over-specific patterns from weak queries,
+         - drop redundant or noisy keywords,
+         - reuse strong, high-signal terms from good queries and top repo titles.
 
-    FORMAT CONSTRAINTS (follow OptimizedGitHubQuerySignature):
-    - Each query must include `site:github.com` and the filters `-awesome -survey -paper -list -collection`.
-    - Use AND / OR only (no NOT), with 1–3 keyword/phrase groups; multi-word phrases in quotes.
-    - One benchmark/dataset or method angle per query; avoid duplicates.
-    - Output EXACTLY as [query1|query2|...|queryN], 8 ≤ N ≤ 12, no extra text.
+    ====================== REFINEMENT STRATEGY ======================
+    - From **good queries + top repo metadata**, extract:
+      - recurring task / method / dataset phrases that clearly match the idea.
+    - From **weak queries**, identify:
+      - overly long phrases, too many AND constraints, or niche qualifiers that
+        unnecessarily restrict recall; these should be shortened or removed.
+    - For **missing A/B/C buckets**, design new queries that:
+      - focus on that specific bucket (one angle per query),
+      - use fewer, more general keywords,
+      - avoid repeating the exact original queries.
+
+    ====================== QUERY CONSTRAINTS (FOLLOW INITIAL RULES) ======================
+    - Each refined query MUST:
+      - include `site:github.com`,
+      - include `-awesome -survey -paper -list -collection`,
+      - stay short and focus on **one clear angle** (implementation, framework/toolkit,
+        or baseline/benchmark/dataset).
+    - Do NOT add many extra negative filters beyond the standard ones.
+    - It is allowed (but not required) to use AND / OR with at most a few high-signal
+      keyword/phrase groups; avoid long, complex logical chains.
+
+    ====================== OUTPUT FORMAT (STRICT) ======================
+    - Output ONLY a single bracketed, pipe-separated list:
+      [query1|query2|...|queryN]
+    - 8 ≤ N ≤ 12.
+    - No extra natural language or markdown around the list.
     """
 
     idea_full_text = dspy.InputField(desc="The full research idea text containing six parts: basic_idea, motivation, research_question, method, experimental_setting, and expected_results (if available)")

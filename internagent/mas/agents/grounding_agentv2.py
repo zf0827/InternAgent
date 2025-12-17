@@ -271,20 +271,20 @@ class GroundingAgentV2(BaseAgent):
 
 **Important Evaluation Principles:**
 1. **Critical Perspective**: Approach this evaluation with a critical eye. Scrutinize the relationship between the report and the idea part thoroughly. Do not be overly generous in assessing relevance or support. Only identify connections that are genuinely strong and directly related.
-2. **Review Standards**: This is part of a peer review process. Maintaining fairness and rigor is essential. Being overly generous undermines the integrity of the review process and does not serve the research community. Avoid inflating scores or overstating the relevance of content.
-3. **Score Distribution**: Based on statistical constraints, approximately only 30% of reports should receive a passing score (>=7.0). When assigning scores, consider this distribution. Reserve scores of 7.0 or higher for reports that truly demonstrate strong, direct relevance and clear support. Most reports should receive scores below 7.0.
+2. **Review Standards**: This is part of a peer review process. Maintaining fairness and rigor is essential. Be objective and balanced in your evaluation. Avoid inflating scores or overstating the relevance of content.
+3. **Align with Human Preferences**: When assigning scores, aim to align with human reviewer evaluation patterns. Evaluate each report independently and fairly based on the actual relevance and support strength for the specific idea part.
 
 Your responsibilities:
 1. Carefully read and understand the research idea part (claims) provided
 2. Analyze the report content thoroughly with a critical eye
 3. Extract ONLY the most relevant content that genuinely relates to or supports the idea part - avoid overstating weak or indirect connections
 4. Write a concise, informative summary (2-5 sentences) that captures the key connections objectively
-5. Score the relevance/support strength on a 0-10 scale with strict standards:
-   - 10: Direct, strong support with clear alignment (exceedingly rare)
-   - 8-9: Strong relevance and clear connections (should be reserved for genuinely strong cases)
-   - 6-7: Moderate relevance with some connections (use conservatively)
-   - 4-5: Weak relevance, indirect connections (more common)
-   - 2-3: Minimal relevance, barely related (common)
+5. Score the relevance/support strength on a 0-10 scale objectively:
+   - 10: Direct, strong support with clear alignment
+   - 8-9: Strong relevance and clear connections
+   - 6-7: Moderate relevance with some connections
+   - 4-5: Weak relevance, indirect connections
+   - 2-3: Minimal relevance, barely related
    - 0-1: No relevant content or completely unrelated
 
 Be precise, objective, and focus on factual connections between the report and the idea part. Do not overstate weak connections or be overly generous in your assessment."""
@@ -337,19 +337,19 @@ Title: {title}
    - Focus on factual relationships, not general statements
 
 3. **Scoring Guidelines:**
-   As a peer reviewer, you must maintain strict and fair evaluation standards:
+   As a peer reviewer, you must maintain objective and fair evaluation standards:
    
    - **Critical Perspective**: Approach this evaluation with a critical eye. Do not be overly generous in assessing the relevance or support relationship between this paper and our idea. Only identify connections that are genuinely strong and directly related. Avoid overstating weak or indirect connections.
    
-   - **Review Standards**: This is part of a peer review process. Maintaining fairness and rigor is essential. Being overly generous in scoring undermines the integrity of the review process. Most papers will have only weak or peripheral connections to any given idea part.
+   - **Review Standards**: This is part of a peer review process. Maintaining fairness and rigor is essential. Be objective and balanced in your evaluation.
    
-   - **Score Distribution**: Based on statistical constraints, approximately only 30% of reports should receive a passing score (>=7.0). Reserve scores of 7.0 or higher for papers that truly demonstrate strong, direct relevance and clear alignment. Most papers should receive scores below 7.0.
+   - **Align with Human Preferences**: When assigning scores, aim to align with human reviewer evaluation patterns. Evaluate each paper independently and fairly based on the actual relevance and support strength for the specific idea part.
    
    Scoring scale:
-   - Score 8-10: High consistency/relevance, directly related research, strong alignment (exceedingly rare, reserve for truly exceptional cases)
-   - Score 6-7: Moderate relevance, some clear connections, complementary aspects (use conservatively, only when connections are genuinely clear)
-   - Score 4-5: Weak relevance, indirect connections, peripheral relationship (more common - use when connections exist but are weak)
-   - Score 2-3: Minimal relevance, barely related topics (common - use when connections are very weak)
+   - Score 8-10: High consistency/relevance, directly related research, strong alignment
+   - Score 6-7: Moderate relevance, some clear connections, complementary aspects
+   - Score 4-5: Weak relevance, indirect connections, peripheral relationship
+   - Score 2-3: Minimal relevance, barely related topics
    - Score 0-1: No relevant content or completely unrelated research
 
 ## Output:
@@ -392,19 +392,19 @@ Report ID: {report_id}
    - Focus on analytical insights rather than procedural information
 
 3. **Scoring Guidelines:**
-   As a peer reviewer, you must maintain strict and fair evaluation standards:
+   As a peer reviewer, you must maintain objective and fair evaluation standards:
    
    - **Critical Perspective**: Approach this evaluation with a critical eye. Do not be overly generous in assessing the relevance of web content to our idea. Web content often contains general discussions or loosely related topics - only identify connections that are genuinely strong and directly related to our specific idea part. Avoid overstating weak or tangential connections.
    
-   - **Review Standards**: This is part of a peer review process. Maintaining fairness and rigor is essential. Being overly generous in scoring undermines the integrity of the review process. Most web content will have only weak or peripheral connections to any given idea part.
+   - **Review Standards**: This is part of a peer review process. Maintaining fairness and rigor is essential. Be objective and balanced in your evaluation.
    
-   - **Score Distribution**: Based on statistical constraints, approximately only 30% of reports should receive a passing score (>=7.0). Reserve scores of 7.0 or higher for content that truly demonstrates strong, direct relevance and clear discussion of similar ideas. Most web content should receive scores below 7.0.
+   - **Align with Human Preferences**: When assigning scores, aim to align with human reviewer evaluation patterns. Evaluate each web content independently and fairly based on the actual relevance and support strength for the specific idea part.
    
    Scoring scale:
-   - Score 8-10: Highly relevant viewpoints, strong evidence, direct discussion of similar ideas (exceedingly rare, reserve for truly exceptional cases)
-   - Score 6-7: Relevant perspectives, some useful insights, moderate connection to idea (use conservatively, only when connections are genuinely clear)
-   - Score 4-5: Weak relevance, indirect connections, peripheral discussions (more common - use when connections exist but are weak)
-   - Score 2-3: Minimal relevance, barely related topics (common - use when connections are very weak)
+   - Score 8-10: Highly relevant viewpoints, strong evidence, direct discussion of similar ideas
+   - Score 6-7: Relevant perspectives, some useful insights, moderate connection to idea
+   - Score 4-5: Weak relevance, indirect connections, peripheral discussions
+   - Score 2-3: Minimal relevance, barely related topics
    - Score 0-1: No relevant content or completely unrelated discussions
 
 ## Output:
@@ -447,19 +447,19 @@ Report ID: {report_id}
    - Focus on concrete technical contributions rather than general descriptions
 
 3. **Scoring Guidelines:**
-   As a peer reviewer, you must maintain strict and fair evaluation standards:
+   As a peer reviewer, you must maintain objective and fair evaluation standards:
    
    - **Critical Perspective**: Approach this evaluation with a critical eye. Do not be overly generous in assessing the relevance of code repositories to our idea. Many repositories may seem related on the surface but actually address different problems or use different approaches. Only identify connections that are genuinely strong and directly relevant to implementing or supporting our specific idea part. Avoid overstating weak or indirect connections.
    
-   - **Review Standards**: This is part of a peer review process. Maintaining fairness and rigor is essential. Being overly generous in scoring undermines the integrity of the review process. Most code repositories will have only weak or peripheral connections to any given idea part.
+   - **Review Standards**: This is part of a peer review process. Maintaining fairness and rigor is essential. Be objective and balanced in your evaluation.
    
-   - **Score Distribution**: Based on statistical constraints, approximately only 30% of reports should receive a passing score (>=7.0). Reserve scores of 7.0 or higher for repositories that truly demonstrate strong, direct relevance and clear contribution to implementing methods or experimental settings. Most repositories should receive scores below 7.0.
+   - **Align with Human Preferences**: When assigning scores, aim to align with human reviewer evaluation patterns. Evaluate each repository independently and fairly based on the actual relevance and support strength for the specific idea part.
    
    Scoring scale:
-   - Score 8-10: Highly relevant implementation, strong contribution to method/experiments, directly usable (exceedingly rare, reserve for truly exceptional cases)
-   - Score 6-7: Relevant codebase, useful implementations or resources, moderate contribution (use conservatively, only when contributions are genuinely clear and directly applicable)
-   - Score 4-5: Weak relevance, indirect connections, limited contribution (more common - use when connections exist but are weak)
-   - Score 2-3: Minimal relevance, barely related implementations (common - use when connections are very weak)
+   - Score 8-10: Highly relevant implementation, strong contribution to method/experiments, directly usable
+   - Score 6-7: Relevant codebase, useful implementations or resources, moderate contribution
+   - Score 4-5: Weak relevance, indirect connections, limited contribution
+   - Score 2-3: Minimal relevance, barely related implementations
    - Score 0-1: No relevant code or completely unrelated repository
 
 ## Output:

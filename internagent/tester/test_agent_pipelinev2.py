@@ -273,6 +273,7 @@ class SingleIdeaPipeline:
         research_params: Dict[str, Any],
         num_personas: int = 3,
         model_config: Optional[Dict[str, Any]] = None,
+        get_revision_advise: bool = True,
     ):
         """
         初始化 SingleIdeaPipeline。
@@ -285,6 +286,7 @@ class SingleIdeaPipeline:
                 - before: 用于划分 future papers 的时间点（时间戳 >= before 的论文为 future papers）
             num_personas: Persona 数量
             model_config: 模型配置（可选，默认使用环境变量）
+            get_revision_advise: 是否需要获取修订建议（控制是否搜索 future papers），默认为 True
         """
         self.pdf_url = pdf_url
         self.cache_path = cache_path
@@ -292,6 +294,7 @@ class SingleIdeaPipeline:
         self.research_params = research_params
         self.future_cutoff = research_params.get("before")  # 从 research_params 中获取 before
         self.num_personas = num_personas
+        self.get_revision_advise = get_revision_advise
 
         # 初始化模型配置
         if model_config is None:
@@ -327,6 +330,9 @@ class SingleIdeaPipeline:
             "_global_config": self.model_config,
         }
 
+        # 根据 get_revision_advise 设置 get_future_paper
+        get_future_paper = self.get_revision_advise
+        
         research_config = {
             "name": "ResearchAgentV3",
             "model_provider": "dsr1",
@@ -340,7 +346,11 @@ class SingleIdeaPipeline:
             "github_max_results": 5,
             "_global_config": self.model_config,
             "extract_temperature": 0.3,
+            "get_future_paper": get_future_paper,
         }
+        
+        # 保存 get_future_paper 供后续使用
+        self.get_future_paper = get_future_paper
 
         grounding_config = {
             "name": "GroundingAgentV2",
@@ -433,20 +443,67 @@ class SingleIdeaPipeline:
         print("STEP 2: ResearchAgentV3 - Idea -> SearchResults")
         print("=" * 80)
 
+        # 初始化 future_papers
+        future_papers: List[Dict[str, Any]] = []
+
         if has_cache(cached_data, "search_results_dict"):
             logger.info("✓ Found cached search_results_dict, skipping ResearchAgentV3")
             search_results_dict = cached_data["search_results_dict"]
             search_results = SearchResults.from_dict(search_results_dict)
-            # 检查 future_papers 是否需要重新计算（如果 future_cutoff 改变了）
-            cached_future_cutoff = cached_data.get("future_cutoff")
-            if cached_future_cutoff == self.future_cutoff:
-                future_papers = cached_data.get("future_papers", [])
+            # 只有当 get_future_paper 为真时才分离 future_papers
+            if self.get_future_paper:
+                # 检查 future_papers 是否需要重新计算（如果 future_cutoff 改变了）
+                cached_future_cutoff = cached_data.get("future_cutoff")
+                if cached_future_cutoff == self.future_cutoff:
+                    future_papers = cached_data.get("future_papers", [])
+                else:
+                    # future_cutoff 改变了，需要重新计算
+                    logger.info(f"future_cutoff changed from {cached_future_cutoff} to {self.future_cutoff}, recalculating future_papers")
+                    papers = search_results.papers
+                    future_papers = []
+                    regular_papers = []
+                    if self.future_cutoff:
+                        for paper in papers:
+                            paper_date = paper.timestamp
+                            if paper_date and paper_date >= self.future_cutoff:
+                                future_papers.append(paper.to_dict())
+                            else:
+                                regular_papers.append(paper)
+                    search_results.papers = regular_papers
+                    search_results_dict = search_results.to_dict()
+                    update_pipeline_result(
+                        self.cache_path,
+                        search_results_dict=search_results_dict,
+                        future_papers=future_papers,
+                        future_cutoff=self.future_cutoff,
+                    )
+                    cached_data["search_results_dict"] = search_results_dict
+                    cached_data["future_papers"] = future_papers
+                print("✓ Using cached search results")
+                if hasattr(search_results, "summary"):
+                    try:
+                        print(search_results.summary())
+                    except Exception:
+                        logger.info("SearchResults summary unavailable, skipped printing.")
+                print(f"Cached future papers: {len(future_papers)} (>= {self.future_cutoff})")
             else:
-                # future_cutoff 改变了，需要重新计算
-                logger.info(f"future_cutoff changed from {cached_future_cutoff} to {self.future_cutoff}, recalculating future_papers")
-                papers = search_results.papers
+                # get_future_paper 为假，不分离，直接使用所有 papers
                 future_papers = []
-                regular_papers = []
+                print("✓ Using cached search results")
+                if hasattr(search_results, "summary"):
+                    try:
+                        print(search_results.summary())
+                    except Exception:
+                        logger.info("SearchResults summary unavailable, skipped printing.")
+                print("Future papers disabled (get_future_paper=False)")
+        else:
+            search_results: SearchResults = await self.research_agent.execute(idea, self.research_params)
+
+            # 只有当 get_future_paper 为真时才按 before 时间划分 future_papers，并从主结果中分离
+            if self.get_future_paper:
+                papers = search_results.papers
+                future_papers: List[Dict[str, Any]] = []
+                regular_papers: List[Source] = []
                 if self.future_cutoff:
                     for paper in papers:
                         paper_date = paper.timestamp
@@ -454,6 +511,9 @@ class SingleIdeaPipeline:
                             future_papers.append(paper.to_dict())
                         else:
                             regular_papers.append(paper)
+                else:
+                    regular_papers = papers
+
                 search_results.papers = regular_papers
                 search_results_dict = search_results.to_dict()
                 update_pipeline_result(
@@ -462,47 +522,29 @@ class SingleIdeaPipeline:
                     future_papers=future_papers,
                     future_cutoff=self.future_cutoff,
                 )
+
+                print(f"Separated papers: regular={len(regular_papers)}, future={len(future_papers)} (>= {self.future_cutoff})")
+
+                # 更新缓存变量
                 cached_data["search_results_dict"] = search_results_dict
                 cached_data["future_papers"] = future_papers
-            print("✓ Using cached search results")
-            if hasattr(search_results, "summary"):
-                try:
-                    print(search_results.summary())
-                except Exception:
-                    logger.info("SearchResults summary unavailable, skipped printing.")
-            print(f"Cached future papers: {len(future_papers)} (>= {self.future_cutoff})")
-        else:
-            search_results: SearchResults = await self.research_agent.execute(idea, self.research_params)
-
-            # 按 before 时间划分 future_papers，并从主结果中分离
-            papers = search_results.papers
-            future_papers: List[Dict[str, Any]] = []
-            regular_papers: List[Source] = []
-            if self.future_cutoff:
-                for paper in papers:
-                    paper_date = paper.timestamp
-                    if paper_date and paper_date >= self.future_cutoff:
-                        future_papers.append(paper.to_dict())
-                    else:
-                        regular_papers.append(paper)
+                cached_data["future_cutoff"] = self.future_cutoff
             else:
-                regular_papers = papers
+                # get_future_paper 为假，不分离，直接使用所有 papers
+                future_papers: List[Dict[str, Any]] = []
+                search_results_dict = search_results.to_dict()
+                update_pipeline_result(
+                    self.cache_path,
+                    search_results_dict=search_results_dict,
+                    future_papers=future_papers,
+                    future_cutoff=None,
+                )
+                print(f"All papers kept together (get_future_paper=False): {len(search_results.papers)} papers")
 
-            search_results.papers = regular_papers
-            search_results_dict = search_results.to_dict()
-            update_pipeline_result(
-                self.cache_path,
-                search_results_dict=search_results_dict,
-                future_papers=future_papers,
-                future_cutoff=self.future_cutoff,
-            )
-
-            print(f"Separated papers: regular={len(regular_papers)}, future={len(future_papers)} (>= {self.future_cutoff})")
-
-            # 更新缓存变量
-            cached_data["search_results_dict"] = search_results_dict
-            cached_data["future_papers"] = future_papers
-            cached_data["future_cutoff"] = self.future_cutoff
+                # 更新缓存变量
+                cached_data["search_results_dict"] = search_results_dict
+                cached_data["future_papers"] = future_papers
+                cached_data["future_cutoff"] = None
 
         if hasattr(search_results, "summary"):
             try:
@@ -561,10 +603,14 @@ class SingleIdeaPipeline:
         all_grounding_results = {}
         cached_gr = cached_data.get("grounding_result", {}) or {}
         for part, claims in claims_dict.items():
-            if has_cache(cached_gr, part, lambda x: isinstance(x, list) and len(x) > 0):
+            # 检查缓存：grounding_result[part] 应该是字典 {web_report: [...], code_report: [...], paper_report: [...]}
+            if has_cache(cached_gr, part, lambda x: isinstance(x, dict) and any(isinstance(v, list) and len(v) > 0 for v in x.values())):
                 logger.info(f"✓ Cached grounding for part {part}, skipping")
                 all_grounding_results[part] = cached_gr[part]
-                print(f"✓ Using cached grounding for '{part}': {len(cached_gr[part])} claims")
+                # 计算总条目数
+                total_entries = sum(len(reports) if isinstance(reports, list) else 0 
+                                   for reports in cached_gr[part].values())
+                print(f"✓ Using cached grounding for '{part}': {total_entries} total entries")
                 continue
             # 单 part 运行
             grounding_context_part = {
@@ -573,14 +619,21 @@ class SingleIdeaPipeline:
             }
             try:
                 grounding_result_part = await self.grounding_agent.execute(grounding_context_part, grounding_params)
-                part_results = grounding_result_part.get(part, []) if isinstance(grounding_result_part, dict) else []
+                # grounding_result_part[part] 应该是字典 {web_report: [...], code_report: [...], paper_report: [...]}
+                part_results = grounding_result_part.get(part, {}) if isinstance(grounding_result_part, dict) else {}
+                if not isinstance(part_results, dict):
+                    logger.warning(f"Unexpected format for part {part} results, expected dict, got {type(part_results)}")
+                    part_results = {}
                 all_grounding_results[part] = part_results
                 update_pipeline_result(
                     self.cache_path,
                     grounding_result={**cached_gr, **{part: part_results}},
                 )
                 cached_gr[part] = part_results
-                print(f"Grounding finished for '{part}': {len(part_results)} entries")
+                # 计算总条目数
+                total_entries = sum(len(reports) if isinstance(reports, list) else 0 
+                                   for reports in part_results.values())
+                print(f"Grounding finished for '{part}': {total_entries} total entries")
             except Exception as e:  # noqa: BLE001
                 logger.error(f"Grounding failed for part {part}: {e}")
                 continue
@@ -662,12 +715,14 @@ class SingleIdeaPipeline:
         print("STEP 6: ReportAgentV2 - EvaluationResults -> Final Report")
         print("=" * 80)
 
+        # 只有当 get_future_paper 为真时才传入 future_papers
         report_context = {
             "idea": idea,
             "evaluation_results": evaluation_results,
             "sources": search_results,
-            "future_papers": future_papers,
         }
+        if self.get_future_paper:
+            report_context["future_papers"] = future_papers
         report_params = {"temperature": self.report_config.get("temperature", 0.4)}
         if has_cache(cached_data, "final_report"):
             final_report = cached_data.get("final_report", "")

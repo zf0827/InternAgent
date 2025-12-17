@@ -130,19 +130,62 @@ class PaperMetadata:
         return f"{authors} {year}. {self.title}. {journal}"
     
 # Search tools
-def fetch_semantic_papers(keyword, max_results=20, before: Optional[str] = None):
+def fetch_semantic_papers(keyword, max_results=20, before: Optional[str] = None, after: Optional[str] = None):
+    """
+    Fetch papers from Semantic Scholar based on the query.
+    
+    Args:
+        keyword: Search query
+        max_results: Maximum number of results (default: 20)
+        before: Upper bound date/year (format: YYYY-MM-DD or YYYY, e.g., "2025-11-01" or "2025")
+        after: Lower bound date/year (format: YYYY-MM-DD or YYYY, e.g., "2024-01-01" or "2024")
+    
+    Returns:
+        List of paper metadata in JSON format
+    """
     search_url = "https://api.semanticscholar.org/graph/v1/paper/search"
     query_params = {
         'query': keyword,
         'limit': max_results,
         'fields': 'title,year,citationCount,abstract,tldr,isOpenAccess,openAccessPdf'
     }
-    if before:
+    
+    # 处理年份范围参数
+    # Semantic Scholar API 的 year 参数格式：
+    # - year=YYYY: 特定年份
+    # - year=YYYY-YYYY: 年份范围
+    # - year=-YYYY: 到某年为止
+    # - year=YYYY-: 从某年开始
+    if after or before:
         try:
-            y = int(str(before)[:4])
-            query_params['year'] = f"-{y}"
-        except Exception:
-            pass
+            after_year = None
+            before_year = None
+            
+            # 提取 after 年份
+            if after:
+                after_str = str(after).strip()
+                # 支持 YYYY-MM-DD 或 YYYY 格式
+                after_year = int(after_str[:4])
+            
+            # 提取 before 年份
+            if before:
+                before_str = str(before).strip()
+                # 支持 YYYY-MM-DD 或 YYYY 格式
+                before_year = int(before_str[:4])
+            
+            # 构建 year 参数
+            if after_year and before_year:
+                if after_year <= before_year:
+                    query_params['year'] = f"{after_year}-{before_year}"
+                else:
+                    logger.warning(f"after year ({after_year}) > before year ({before_year}), ignoring year filter")
+            elif after_year:
+                query_params['year'] = f"{after_year}-"
+            elif before_year:
+                query_params['year'] = f"-{before_year}"
+        except (ValueError, IndexError) as e:
+            logger.warning(f"Error parsing date parameters (after={after}, before={before}): {e}")
+    
     headers = {'x-api-key': os.environ['S2_API_KEY']}  # Ensure you have the API key set
     response = requests.get(search_url, params=query_params, headers=headers)
 

@@ -9,10 +9,13 @@ processes that are separated from the final answer using XML-style tags.
 import json
 import logging
 import os
+import asyncio
 from typing import Dict, List, Optional, Any, Union
 
 import openai
 from openai import AsyncOpenAI
+import jsonschema
+from jsonschema import validate, ValidationError
 
 from .base_model import BaseModel
 
@@ -38,7 +41,8 @@ class R1Model(BaseModel):
                 model_name: str = "DeepSeek-V3.2", 
                 max_tokens: int = 4096,
                 temperature: float = 0.7,
-                timeout: int = 60):
+                timeout: int = 60,
+                max_schema_retries: int = 3):
         """
         Initialize the OpenAI model adapter.
         
@@ -48,6 +52,7 @@ class R1Model(BaseModel):
             max_tokens: Maximum tokens to generate by default
             temperature: Default temperature setting (0 to 1)
             timeout: Timeout in seconds for API calls
+            max_schema_retries: Maximum number of retries when JSON doesn't match schema (default: 3)
         """
         self.api_key = api_key or os.environ.get("DS_API_KEY")
         if not self.api_key:
@@ -59,6 +64,7 @@ class R1Model(BaseModel):
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.timeout = timeout
+        self.max_schema_retries = max_schema_retries
         
         # Initialize the client with only the supported parameters for version 1.3.3
         try:
@@ -133,6 +139,10 @@ class R1Model(BaseModel):
         """
         Generate a response formatted as JSON according to the provided schema.
         
+        This method includes automatic retry logic to ensure the returned JSON
+        conforms to the provided schema. If the response doesn't match the schema,
+        it will retry up to max_schema_retries times.
+        
         Args:
             prompt: The user prompt to send to the model
             json_schema: JSON schema defining the expected response structure
@@ -142,50 +152,107 @@ class R1Model(BaseModel):
             
         Returns:
             JSON response matching the provided schema
+            
+        Raises:
+            ValueError: If JSON doesn't match schema after all retries
+            ValidationError: If schema validation fails after all retries
         """
-
         if system_prompt:
             enhanced_system_prompt = f"{system_prompt}\n\nRespond with JSON that matches this schema: {json.dumps(json_schema)}"
         else:
             enhanced_system_prompt = f"Respond with JSON that matches this schema: {json.dumps(json_schema)}"
 
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": enhanced_system_prompt},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=temperature if temperature is not None else self.temperature,
-                response_format={"type": "json_object"},
-                **kwargs
-            )
-            logger.info(f"R1Model: response: {response}")
-            response_text = response.choices[0].message.content
-            
-            # Handle R1 model reasoning tags if present
-            if "</think>" in response_text:
-                think_text, answer_text = response_text.split("</think>\n\n", 1)
-            else:
-                answer_text = response_text
-            
-            # Remove markdown code block markers if present
-            answer_text = answer_text.strip()
-            if answer_text.startswith("```json"):
-                answer_text = answer_text[7:]  # Remove ```json
-            elif answer_text.startswith("```"):
-                answer_text = answer_text[3:]  # Remove ```
-            if answer_text.endswith("```"):
-                answer_text = answer_text[:-3]  # Remove trailing ```
-            answer_text = answer_text.strip()
-            
-            return json.loads(answer_text)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to decode JSON response: {e}")
-            raise ValueError(f"Model did not return valid JSON: {e}")
-        except Exception as e:
-            logger.error(f"Error generating JSON response from OpenAI: {e}")
-            raise
+        remaining_retries = self.max_schema_retries
+        last_error = None
+        
+        while remaining_retries >= 0:
+            try:
+                response = await self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": enhanced_system_prompt},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=temperature if temperature is not None else self.temperature,
+                    response_format={"type": "json_object"},
+                    **kwargs
+                )
+                logger.info(f"R1Model: response: {response}")
+                response_text = response.choices[0].message.content
+                
+                # Handle R1 model reasoning tags if present
+                if "</think>" in response_text:
+                    think_text, answer_text = response_text.split("</think>\n\n", 1)
+                else:
+                    answer_text = response_text
+                
+                # Remove markdown code block markers if present
+                answer_text = answer_text.strip()
+                if answer_text.startswith("```json"):
+                    answer_text = answer_text[7:]  # Remove ```json
+                elif answer_text.startswith("```"):
+                    answer_text = answer_text[3:]  # Remove ```
+                if answer_text.endswith("```"):
+                    answer_text = answer_text[:-3]  # Remove trailing ```
+                answer_text = answer_text.strip()
+                
+                # Parse JSON
+                try:
+                    result_dict = json.loads(answer_text)
+                except json.JSONDecodeError as e:
+                    last_error = ValueError(f"Model did not return valid JSON: {e}")
+                    logger.warning(f"Failed to decode JSON response (attempt {self.max_schema_retries - remaining_retries + 1}/{self.max_schema_retries + 1}): {e}")
+                    if remaining_retries > 0:
+                        await asyncio.sleep(1)  # Wait before retry
+                        remaining_retries -= 1
+                        continue
+                    raise last_error
+                
+                # Validate against schema
+                try:
+                    validate(instance=result_dict, schema=json_schema)
+                    logger.info(f"JSON response successfully validated against schema (attempt {self.max_schema_retries - remaining_retries + 1}/{self.max_schema_retries + 1})")
+                    return result_dict
+                except ValidationError as e:
+                    last_error = e
+                    error_message = str(e) if hasattr(e, '__str__') else getattr(e, 'message', str(e))
+                    logger.warning(f"JSON response does not match schema (attempt {self.max_schema_retries - remaining_retries + 1}/{self.max_schema_retries + 1}): {error_message}")
+                    if remaining_retries > 0:
+                        # Add feedback to prompt for next retry
+                        error_feedback = f"\n\nPrevious attempt failed schema validation: {error_message}. Please ensure the JSON strictly matches the schema."
+                        prompt_with_feedback = prompt + error_feedback
+                        await asyncio.sleep(1)  # Wait before retry
+                        remaining_retries -= 1
+                        # Update prompt for next iteration
+                        prompt = prompt_with_feedback
+                        continue
+                    raise ValueError(f"JSON response does not match schema after {self.max_schema_retries + 1} attempts: {error_message}")
+                    
+            except json.JSONDecodeError as e:
+                last_error = ValueError(f"Model did not return valid JSON: {e}")
+                logger.error(f"Failed to decode JSON response: {e}")
+                if remaining_retries > 0:
+                    await asyncio.sleep(1)
+                    remaining_retries -= 1
+                    continue
+                raise last_error
+            except ValidationError as e:
+                # This should not happen here as we catch it above, but just in case
+                last_error = e
+                error_message = str(e) if hasattr(e, '__str__') else getattr(e, 'message', str(e))
+                if remaining_retries > 0:
+                    await asyncio.sleep(1)
+                    remaining_retries -= 1
+                    continue
+                raise ValueError(f"JSON response does not match schema after {self.max_schema_retries + 1} attempts: {error_message}")
+            except Exception as e:
+                logger.error(f"Error generating JSON response from OpenAI: {e}")
+                raise
+        
+        # Should not reach here, but just in case
+        if last_error:
+            raise last_error
+        raise ValueError("Failed to generate valid JSON response")
     
     async def generate_json(self, 
                           prompt: str, 
@@ -271,5 +338,6 @@ class R1Model(BaseModel):
             model_name=config.get("model_name", "DeepSeek-V3.2"),
             max_tokens=config.get("max_tokens", 4096),
             temperature=config.get("temperature", 0.7),
-            timeout=config.get("timeout", 60)
+            timeout=config.get("timeout", 60),
+            max_schema_retries=config.get("max_schema_retries", 3)
         ) 

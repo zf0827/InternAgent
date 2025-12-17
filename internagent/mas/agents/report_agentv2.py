@@ -277,19 +277,20 @@ These statistics reflect the actual distribution and scoring patterns from ICLR2
 """.strip()
 
         return f"""
-You are an ICLR-style meta-reviewer conducting a rigorous peer review. This is a critical evaluation task that requires strict standards to maintain fairness and integrity of the review process.
+You are an ICLR-style meta-reviewer conducting a rigorous peer review. Your goal is to provide an objective evaluation that aligns with human reviewer decisions and ICLR2025 review patterns.
 
-=== Critical Review Guidelines ===
-1. **Adopt a critical perspective**: Approach this review with a skeptical and analytical mindset. Scrutinize the work carefully and identify weaknesses, limitations, and potential issues.
-2. **Maintain strict standards**: This is a peer review process, not a generous evaluation. Being overly lenient undermines the fairness and rigor of the entire review system. Only award high scores when the work genuinely merits them.
-3. **Consider ICLR2025 statistics**: The following distribution and scoring patterns from ICLR2025 should inform your evaluation:
+=== Review Guidelines ===
+1. **Align with human reviewer decisions**: The ICLR2025 statistics below represent actual human reviewer behavior and decision patterns. Your evaluation should closely match these patterns. This is the PRIMARY guideline for your evaluation.
+2. **Objective and balanced assessment**: Conduct a thorough, objective analysis that fairly weighs both strengths and weaknesses. Avoid systematic bias toward either extreme leniency or excessive strictness.
+3. **Adopt a critical perspective**: While maintaining objectivity, approach the review with analytical rigor. Identify both strengths and weaknesses, limitations and contributions, to ensure a balanced evaluation.
+4. **ICLR2025 statistics alignment**: The following distribution and scoring patterns from ICLR2025 represent how human reviewers actually evaluated submissions. Your decision and score should align with these patterns:
 {decision_stats}
-4. **Score alignment**: Your final score (0-10, decimals allowed) should logically align with your decision category. For example:
+5. **Score alignment with decision category**: Your final score (0-10, decimals allowed) must logically align with your decision category based on the ICLR2025 statistics:
    - reject decisions typically correspond to scores around 4.77 ± 0.92
    - poster decisions typically correspond to scores around 6.23 ± 0.50
    - spotlight decisions typically correspond to scores around 7.35 ± 0.26
    - oral decisions typically correspond to scores around 7.79 ± 0.55
-   Ensure your score reflects the quality level implied by your decision.
+   Ensure your score distribution matches the human reviewer patterns shown in the statistics above.
 
 === Research Idea ===
 {idea_text}
@@ -304,16 +305,16 @@ You are an ICLR-style meta-reviewer conducting a rigorous peer review. This is a
 - reject: not accepted
 - poster: accepted (regular)
 - spotlight: accepted (notable)
-- oral: accepted (rare, top tier)
+- oral: accepted (great)
 
 === Requirements ===
 - Use ONLY the provided reviewer evidence; do not invent new facts.
 - Aggregate consensus and highlight divergences; call out any outlier scores.
 - Weigh all five dimensions (clarity, novelty, validity, feasibility, significance); justify trade-offs explicitly.
+- **CRITICAL: Align with human reviewer patterns**: Your decision distribution and scoring should match the ICLR2025 statistics. For example, approximately 25.65% of submissions should receive "poster" decisions with scores around 6.23, not systematically lower. Ensure your evaluation reflects the actual human reviewer behavior patterns.
 - Score on a continuous 0-10 scale (decimals allowed). The score must align with your decision category based on the ICLR2025 statistics provided above.
-- If evidence is insufficient or quality is questionable, be conservative and err on the side of lower scores.
-- Maintain critical standards: avoid being overly generous. Remember that most submissions receive reject or poster decisions.
-- Tone: concise, professional, decision-focused, and appropriately critical.
+- Be objective and balanced: neither overly generous nor overly strict. Let the ICLR2025 statistics guide your calibration.
+- Tone: concise, professional, decision-focused, and objective.
 
 === Output Format ===
 Return pure JSON (no code fences) conforming to the schema: reason, score (0-10, decimals allowed), decision.
@@ -394,7 +395,7 @@ You are a senior researcher. Using the current idea and the extracted future pap
         try:
             resp = await self._call_model(
                 prompt=prompt,
-                system_prompt="You are a helpful senior researcher. 输出必须是纯文本，不要 JSON 也不要代码块标记。",
+                system_prompt="You are a helpful senior researcher.",
                 schema=None,
                 temperature=params.get("temperature", self.temperature),
             )

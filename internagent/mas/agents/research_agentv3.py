@@ -42,6 +42,7 @@ class ResearchAgentV3(BaseAgent):
         self.paper_batch_size = config.get("paper_batch_size", 8)
         self.web_max_results = config.get("web_max_results", 3)
         self.github_max_results = config.get("github_max_results", 3)
+        self.get_future_paper = config.get("get_future_paper", True)
 
         # 加载 BGE 模型（全局单例，避免重复加载）
         embedding_model_name = config.get("embedding_model_name", "BAAI/bge-base-en-v1.5")
@@ -148,9 +149,10 @@ class ResearchAgentV3(BaseAgent):
         if self.enable_refine and depth > 0:
             refined_queries = Q
 
-        # 10) 获取future papers
-        future_papers = await self._get_future_papers(idea, initial_queries, params)
-        all_papers = all_papers + future_papers
+        # 10) 获取future papers（只有当 get_future_paper 为真时才执行）
+        if self.get_future_paper:
+            future_papers = await self._get_future_papers(idea, initial_queries, params)
+            all_papers = all_papers + future_papers
 
         return SearchResults(
             idea=idea,
